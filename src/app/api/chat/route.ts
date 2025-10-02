@@ -419,7 +419,7 @@ export async function POST(req: Request) {
       );
     } catch (error) {
       console.error("[Chat API] Error converting messages:", error);
-      // Fallback: return empty array if conversion fails
+      // Fallback: use empty array if conversion fails
       convertedMessages = [];
       console.log("[Chat API] Using empty array as fallback");
     }

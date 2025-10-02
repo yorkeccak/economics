@@ -170,7 +170,7 @@ function HomeContent() {
       );
       setCurrentSessionId(chatIdFromUrl || undefined);
     }
-  }, [searchParams, currentSessionId]); // Watch searchParams changes
+  }, [searchParams]); // Watch searchParams changes
 
   // Handle URL messages from auth callbacks
   useEffect(() => {

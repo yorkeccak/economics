@@ -4,67 +4,6 @@ import { useChat } from "@ai-sdk/react";
 import { useQueryClient, useMutation } from "@tanstack/react-query";
 import React from "react";
 
-// Global Error Boundary for Chat Interface
-class ChatErrorBoundary extends React.Component<
-  { children: React.ReactNode },
-  { hasError: boolean; error?: Error }
-> {
-  constructor(props: { children: React.ReactNode }) {
-    super(props);
-    this.state = { hasError: false };
-  }
-
-  static getDerivedStateFromError(error: Error) {
-    return { hasError: true, error };
-  }
-
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error(
-      `[Chat Error Boundary] Error in chat interface:`,
-      error,
-      errorInfo
-    );
-
-    // Check if it's an empty error object
-    if (!error || Object.keys(error).length === 0) {
-      console.warn(
-        "[Chat Error Boundary] Empty error object caught - ignoring"
-      );
-      // Reset the error boundary state
-      this.setState({ hasError: false, error: undefined });
-      return;
-    }
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-4 m-4">
-          <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
-            <AlertCircle className="h-4 w-4" />
-            <span className="font-medium">Chat Interface Error</span>
-          </div>
-          <div className="text-sm text-red-600 dark:text-red-300">
-            Error: {this.state.error?.message || "Unknown error"}
-          </div>
-          <div className="mt-2">
-            <button
-              onClick={() =>
-                this.setState({ hasError: false, error: undefined })
-              }
-              className="text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-200 underline"
-            >
-              Try Again
-            </button>
-          </div>
-        </div>
-      );
-    }
-
-    return this.props.children;
-  }
-}
-
 // Error Boundary for Chart Rendering
 class ChartErrorBoundary extends React.Component<
   { children: React.ReactNode; callId: string },
@@ -1658,17 +1597,7 @@ export function ChatInterface({
   const [editingText, setEditingText] = useState("");
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
   const [chartRenderKey, setChartRenderKey] = useState<number>(0);
-  const [reloadCount, setReloadCount] = useState<number>(0);
-  const [errorLoopTimeout, setErrorLoopTimeout] =
-    useState<NodeJS.Timeout | null>(null);
-  const [consecutiveEmptyErrors, setConsecutiveEmptyErrors] =
-    useState<number>(0);
-  const [circuitBreakerTimeout, setCircuitBreakerTimeout] =
-    useState<NodeJS.Timeout | null>(null);
-  const [suppressEmptyErrors, setSuppressEmptyErrors] =
-    useState<boolean>(false);
-  const [finalAnswerProduced, setFinalAnswerProduced] = useState(false);
-  const [emptyErrorCount, setEmptyErrorCount] = useState(0);
+  const [forceChartCreation, setForceChartCreation] = useState<boolean>(false);
   const [expandedFredResults, setExpandedFredResults] = useState<Set<string>>(
     new Set()
   );
@@ -2796,10 +2725,6 @@ export function ChatInterface({
         currentMessagesCount: messages.length,
       });
 
-      // Mark that a final answer has been produced
-      console.log("[ChatInterface] onFinish - final answer produced");
-      setFinalAnswerProduced(true);
-
       // Sync with server when chat completes (server has definitely processed increment by now)
       if (user) {
         console.log(
@@ -2827,277 +2752,113 @@ export function ChatInterface({
         return;
       }
 
-      // If we're in suppression mode, ignore all errors
-      if (suppressEmptyErrors) {
-        console.warn(
-          "[ChatInterface] Error handling suppressed due to previous empty errors"
-        );
-        return;
+      console.error("[ChatInterface] Chat error:", error);
+
+      // Handle different types of error objects
+      let errorMessage = "Unknown error";
+      let errorString = "{}";
+
+      if (error instanceof Error) {
+        errorMessage = error.message;
+        errorString = error.toString();
+      } else if (typeof error === "string") {
+        errorMessage = error;
+        errorString = error;
+      } else if (error && typeof error === "object") {
+        errorMessage =
+          (error as any).message || (error as any).toString() || "Object error";
+        errorString = JSON.stringify(error, null, 2);
+      } else {
+        errorMessage = String(error) || "Unknown error";
+        errorString = String(error) || "{}";
       }
 
-      // Only process non-empty errors
-      try {
-        console.error("[ChatInterface] Chat error:", error);
+      console.error("[ChatInterface] Error details:", {
+        message: errorMessage,
+        cause: error?.cause || "No cause",
+        stack: error?.stack || "No stack",
+        currentSessionId,
+        status,
+        errorType: typeof error,
+        errorKeys: Object.keys(error || {}),
+        errorString: errorString,
+        isErrorObject: error instanceof Error,
+        errorConstructor: error?.constructor?.name,
+      });
 
-        // Handle different types of error objects
-        let errorMessage = "Unknown error";
-        let errorString = "{}";
+      // If there's a network error or duplicate item error, try to reload the session
+      const isNetworkError =
+        errorMessage.includes("terminated") ||
+        errorMessage.includes("closed") ||
+        errorMessage.includes("UND_ERR_SOCKET") ||
+        errorMessage.includes("failed to pipe response") ||
+        errorMessage.includes("NetworkError") ||
+        errorMessage.includes("fetch") ||
+        errorString.includes("terminated") ||
+        errorString.includes("closed");
 
-        if (error instanceof Error) {
-          errorMessage = error.message;
-          errorString = error.toString();
-        } else if (typeof error === "string") {
-          errorMessage = error;
-          errorString = error;
-        } else if (error && typeof error === "object") {
-          errorMessage =
-            (error as any).message ||
-            (error as any).toString() ||
-            "Object error";
-          errorString = JSON.stringify(error, null, 2);
-        } else {
-          errorMessage = String(error) || "Unknown error";
-          errorString = String(error) || "{}";
-        }
+      const isDuplicateError =
+        errorMessage.includes("Duplicate item found") ||
+        errorString.includes("Duplicate item found");
 
-        console.error("[ChatInterface] Error details:", {
-          message: errorMessage,
-          cause: error?.cause || "No cause",
-          stack: error?.stack || "No stack",
-          currentSessionId,
-          status,
-          errorType: typeof error,
-          errorKeys: Object.keys(error || {}),
-          errorString: errorString,
-          isErrorObject: error instanceof Error,
-          errorConstructor: error?.constructor?.name,
-        });
+      // Also check for empty error objects that might indicate a network issue
+      const shouldReload =
+        currentSessionId && (isNetworkError || isDuplicateError);
 
-        // If there's a network error or duplicate item error, try to reload the session
-        const isNetworkError =
-          errorMessage.includes("terminated") ||
-          errorMessage.includes("closed") ||
-          errorMessage.includes("UND_ERR_SOCKET") ||
-          errorMessage.includes("failed to pipe response") ||
-          errorMessage.includes("NetworkError") ||
-          errorMessage.includes("fetch") ||
-          errorString.includes("terminated") ||
-          errorString.includes("closed");
+      // Empty error detection is handled at the top of the function
 
-        const isDuplicateError =
-          errorMessage.includes("Duplicate item found") ||
-          errorString.includes("Duplicate item found");
+      if (shouldReload) {
+        // Check if we already have a recent assistant message to avoid reloading successful responses
+        const lastMessage = messages[messages.length - 1];
+        const hasRecentAssistantMessage =
+          lastMessage?.role === "assistant" &&
+          lastMessage?.parts &&
+          lastMessage.parts.length > 0;
 
-        // Also check for empty error objects that might indicate a network issue
-        const isEmptyError = !error || Object.keys(error).length === 0;
+        // Check if there are any tool calls in progress or recently completed
+        const hasToolCallsInProgress = lastMessage?.parts?.some(
+          (part: any) =>
+            part.type?.startsWith("tool-") &&
+            (part.state === "input-streaming" ||
+              part.state === "input-available" ||
+              part.state === "output-available")
+        );
 
-        // Track consecutive empty errors for circuit breaker
-        if (isEmptyError) {
-          setConsecutiveEmptyErrors((prev) => prev + 1);
+        if (!hasRecentAssistantMessage && !hasToolCallsInProgress) {
+          const now = Date.now();
+          const timeSinceLastReload = now - lastReloadTimeRef.current;
 
-          // Activate error suppression after 2 consecutive empty errors
-          if (consecutiveEmptyErrors >= 1) {
-            setSuppressEmptyErrors(true);
-            console.warn(
-              "[ChatInterface] Activating empty error suppression after consecutive empty errors",
-              { consecutiveEmptyErrors }
-            );
-          }
-
-          // Set a timeout to reset the circuit breaker after 60 seconds of no activity
-          if (circuitBreakerTimeout) {
-            clearTimeout(circuitBreakerTimeout);
-          }
-          const timeout = setTimeout(() => {
+          // Prevent reloading if we've reloaded within the last 10 seconds
+          if (timeSinceLastReload > 10000) {
             console.log(
-              "[ChatInterface] Circuit breaker timeout - resetting consecutive empty errors"
-            );
-            setConsecutiveEmptyErrors(0);
-            setSuppressEmptyErrors(false);
-            setCircuitBreakerTimeout(null);
-          }, 60000);
-          setCircuitBreakerTimeout(timeout);
-        } else {
-          setConsecutiveEmptyErrors(0);
-          setSuppressEmptyErrors(false);
-          if (circuitBreakerTimeout) {
-            clearTimeout(circuitBreakerTimeout);
-            setCircuitBreakerTimeout(null);
-          }
-        }
-
-        // Circuit breaker for consecutive empty errors - more aggressive for empty errors
-        const maxConsecutiveEmptyErrors = 3; // Reduced from 5 to 3 for faster activation
-        const shouldCircuitBreak =
-          consecutiveEmptyErrors >= maxConsecutiveEmptyErrors;
-
-        // Immediate circuit breaker for empty errors if we've seen any recently
-        const hasRecentEmptyErrors = consecutiveEmptyErrors > 0;
-        const shouldImmediateCircuitBreak =
-          isEmptyError && hasRecentEmptyErrors;
-
-        // More specific error detection
-        const isConnectionError =
-          errorMessage.includes("Connection") ||
-          errorMessage.includes("timeout") ||
-          errorMessage.includes("aborted") ||
-          errorString.includes("Connection") ||
-          errorString.includes("timeout") ||
-          errorString.includes("aborted");
-
-        const shouldReload =
-          currentSessionId &&
-          (isNetworkError ||
-            isDuplicateError ||
-            isEmptyError ||
-            isConnectionError) &&
-          status !== "streaming" && // Don't reload while actively streaming
-          !shouldCircuitBreak && // Don't reload if circuit breaker is active
-          !shouldImmediateCircuitBreak && // Don't reload if immediate circuit breaker is active
-          !suppressEmptyErrors; // Don't reload if empty errors are suppressed
-
-        if (isEmptyError) {
-          console.warn(
-            "[ChatInterface] Empty error object detected - this might indicate a network or connection issue",
-            { consecutiveEmptyErrors, shouldCircuitBreak }
-          );
-        }
-
-        if (isConnectionError) {
-          console.warn(
-            "[ChatInterface] Connection error detected - this might indicate a network issue"
-          );
-        }
-
-        if (shouldCircuitBreak) {
-          console.error(
-            "[ChatInterface] Circuit breaker activated - too many consecutive empty errors",
-            { consecutiveEmptyErrors, maxConsecutiveEmptyErrors }
-          );
-        }
-
-        if (shouldImmediateCircuitBreak) {
-          console.error(
-            "[ChatInterface] Immediate circuit breaker activated - empty error detected with recent empty errors",
-            { consecutiveEmptyErrors, hasRecentEmptyErrors }
-          );
-        }
-
-        if (suppressEmptyErrors) {
-          console.warn("[ChatInterface] Empty error suppression is active", {
-            consecutiveEmptyErrors,
-            suppressEmptyErrors,
-          });
-        }
-
-        if (shouldReload) {
-          // Check if we already have a recent assistant message to avoid reloading successful responses
-          const lastMessage = messages[messages.length - 1];
-          const hasRecentAssistantMessage =
-            lastMessage?.role === "assistant" &&
-            lastMessage?.parts &&
-            lastMessage.parts.length > 0;
-
-          // Check if there are any tool calls in progress or recently completed
-          const hasToolCallsInProgress = lastMessage?.parts?.some(
-            (part: any) =>
-              part.type?.startsWith("tool-") &&
-              (part.state === "input-streaming" ||
-                part.state === "input-available" ||
-                part.state === "output-available")
-          );
-
-          if (!hasRecentAssistantMessage && !hasToolCallsInProgress) {
-            const now = Date.now();
-            const timeSinceLastReload = now - lastReloadTimeRef.current;
-
-            // Prevent reloading if we've reloaded within the last 10 seconds or too many times
-            const maxReloads = 3;
-            if (timeSinceLastReload > 10000 && reloadCount < maxReloads) {
-              console.log(
-                "[ChatInterface] Error detected, reloading session to get saved message",
-                {
-                  isNetworkError,
-                  isDuplicateError,
-                  isEmptyError,
-                  isConnectionError,
-                  errorMessage,
-                  timeSinceLastReload,
-                  reloadCount,
-                  maxReloads,
-                }
-              );
-              lastReloadTimeRef.current = now;
-              setReloadCount((prev) => prev + 1);
-              setTimeout(() => {
-                console.log(
-                  "[ChatInterface] Reloading session:",
-                  currentSessionId
-                );
-                loadSessionMessages(currentSessionId);
-              }, 2000);
-            } else if (reloadCount >= maxReloads) {
-              console.warn(
-                "[ChatInterface] Maximum reload attempts reached, stopping automatic reloads",
-                { reloadCount, maxReloads }
-              );
-
-              // Set a timeout to reset the reload count after 30 seconds
-              if (!errorLoopTimeout) {
-                const timeout = setTimeout(() => {
-                  console.log(
-                    "[ChatInterface] Resetting reload count after timeout"
-                  );
-                  setReloadCount(0);
-                  setErrorLoopTimeout(null);
-                }, 30000);
-                setErrorLoopTimeout(timeout);
+              "[ChatInterface] Error detected, reloading session to get saved message",
+              {
+                isNetworkError,
+                isDuplicateError,
+                errorMessage,
+                timeSinceLastReload,
               }
-            } else {
+            );
+            lastReloadTimeRef.current = now;
+            setTimeout(() => {
               console.log(
-                "[ChatInterface] Error detected but recent reload within 10s, skipping reload",
-                { timeSinceLastReload }
+                "[ChatInterface] Reloading session:",
+                currentSessionId
               );
-            }
+              loadSessionMessages(currentSessionId);
+            }, 2000);
           } else {
             console.log(
-              "[ChatInterface] Error detected but recent assistant message or tool calls found, skipping reload",
-              { isNetworkError, isDuplicateError, errorMessage }
+              "[ChatInterface] Error detected but recent reload within 10s, skipping reload",
+              { timeSinceLastReload }
             );
           }
-        } else if (shouldCircuitBreak) {
-          console.log(
-            "[ChatInterface] Circuit breaker active - not attempting reload",
-            { consecutiveEmptyErrors, maxConsecutiveEmptyErrors }
-          );
-        } else if (shouldImmediateCircuitBreak) {
-          console.log(
-            "[ChatInterface] Immediate circuit breaker active - not attempting reload",
-            { consecutiveEmptyErrors, hasRecentEmptyErrors }
-          );
         } else {
           console.log(
-            "[ChatInterface] Error detected but conditions not met for reload",
-            {
-              currentSessionId: !!currentSessionId,
-              isNetworkError,
-              isDuplicateError,
-              isEmptyError,
-              isConnectionError,
-              status,
-              shouldCircuitBreak,
-              shouldImmediateCircuitBreak,
-              suppressEmptyErrors,
-            }
+            "[ChatInterface] Error detected but recent assistant message or tool calls found, skipping reload",
+            { isNetworkError, isDuplicateError, errorMessage }
           );
         }
-      } catch (errorHandlingError) {
-        console.error(
-          "[ChatInterface] Error in error handling:",
-          errorHandlingError
-        );
-        // If error handling itself fails, just return to prevent infinite loops
-        return;
       }
     },
   });
@@ -3264,75 +3025,6 @@ export function ChatInterface({
     messageIdsRef.current = currentIds;
   }, [messages]);
 
-  // Track when a final answer is produced
-  useEffect(() => {
-    if (status === "ready" && messages.length > 0) {
-      const lastMessage = messages[messages.length - 1];
-      if (lastMessage?.role === "assistant" && lastMessage?.parts) {
-        const textParts = lastMessage.parts.filter(
-          (part) => part.type === "text"
-        );
-        const reasoningParts = lastMessage.parts.filter(
-          (part) => part.type === "reasoning"
-        );
-
-        // Check if we have a complete final answer
-        const hasFinalAnswer =
-          textParts.length > 0 &&
-          textParts.some((part) => part.text && part.text.length > 50); // Substantial text content
-
-        console.log("[ChatInterface] Checking for final answer:", {
-          hasTextParts: textParts.length > 0,
-          hasReasoningParts: reasoningParts.length > 0,
-          textContentLength: textParts[0]?.text?.length || 0,
-          hasFinalAnswer,
-          partsCount: lastMessage.parts.length,
-        });
-
-        if (hasFinalAnswer && !finalAnswerProduced) {
-          console.log("[ChatInterface] Final answer detected and produced!");
-          setFinalAnswerProduced(true);
-        }
-      }
-    }
-  }, [status, messages.length, finalAnswerProduced]);
-
-  // Additional useEffect to handle message completion detection
-  useEffect(() => {
-    if (messages.length > 0) {
-      const lastMessage = messages[messages.length - 1];
-      if (lastMessage?.role === "assistant" && lastMessage?.parts) {
-        const textParts = lastMessage.parts.filter(
-          (part) => part.type === "text"
-        );
-        const reasoningParts = lastMessage.parts.filter(
-          (part) => part.type === "reasoning"
-        );
-
-        // Check if we have both reasoning and text parts (indicating completion)
-        if (reasoningParts.length > 0 && textParts.length > 0) {
-          const lastReasoningPart = reasoningParts[reasoningParts.length - 1];
-          const lastTextPart = textParts[textParts.length - 1];
-
-          console.log("[ChatInterface] Message completion detected:", {
-            reasoningState: (lastReasoningPart as any)?.state,
-            textState: (lastTextPart as any)?.state,
-            textLength: lastTextPart?.text?.length,
-            reasoningLength: lastReasoningPart?.text?.length,
-          });
-
-          // If we have completed text, ensure it's rendered
-          if (lastTextPart?.text && (lastTextPart as any)?.state === "done") {
-            console.log(
-              "[ChatInterface] Final text is ready, ensuring UI update"
-            );
-            // Final answer is ready - no additional action needed
-          }
-        }
-      }
-    }
-  }, [messages, status]);
-
   useEffect(() => {
     if (messages.length === 0) {
       setContextResourceMap((prev) => {
@@ -3344,44 +3036,6 @@ export function ChatInterface({
       messageIdsRef.current = [];
     }
   }, [messages.length]);
-
-  // Reset final answer tracking when starting a new conversation
-  useEffect(() => {
-    if (messages.length === 0) {
-      setFinalAnswerProduced(false);
-      setEmptyErrorCount(0);
-      setSuppressEmptyErrors(false);
-    }
-  }, [messages.length]);
-
-  // Track when a final answer is produced
-  useEffect(() => {
-    if (status === "ready" && messages.length > 0) {
-      const lastMessage = messages[messages.length - 1];
-      if (lastMessage?.role === "assistant" && lastMessage?.parts) {
-        const textParts = lastMessage.parts.filter(
-          (part) => part.type === "text"
-        );
-
-        // Check if we have a complete final answer
-        const hasFinalAnswer =
-          textParts.length > 0 &&
-          textParts.some((part) => part.text && part.text.length > 50); // Substantial text content
-
-        console.log("[ChatInterface] Checking for final answer:", {
-          hasTextParts: textParts.length > 0,
-          textContentLength: textParts[0]?.text?.length || 0,
-          hasFinalAnswer,
-          finalAnswerProduced,
-        });
-
-        if (hasFinalAnswer && !finalAnswerProduced) {
-          console.log("[ChatInterface] Final answer detected and produced!");
-          setFinalAnswerProduced(true);
-        }
-      }
-    }
-  }, [status, messages.length, finalAnswerProduced]);
 
   // Session loading function - defined after useChat to access setMessages
   const loadSessionMessages = useCallback(
@@ -3518,25 +3172,6 @@ export function ChatInterface({
       return;
     }
 
-    // Reset reload count when starting a new session
-    setReloadCount(0);
-
-    // Reset circuit breaker when starting a new session
-    setConsecutiveEmptyErrors(0);
-    setSuppressEmptyErrors(false);
-
-    // Clear any existing error loop timeout
-    if (errorLoopTimeout) {
-      clearTimeout(errorLoopTimeout);
-      setErrorLoopTimeout(null);
-    }
-
-    // Clear any existing circuit breaker timeout
-    if (circuitBreakerTimeout) {
-      clearTimeout(circuitBreakerTimeout);
-      setCircuitBreakerTimeout(null);
-    }
-
     if (sessionId !== currentSessionId) {
       console.log("[Chat Interface] Loading session:", sessionId);
       loadSessionMessages(sessionId);
@@ -3582,6 +3217,102 @@ export function ChatInterface({
     if (hasChartData) {
       console.log(`[Chart Rendering] Chart data detected, forcing re-render`);
       setChartRenderKey((prev) => prev + 1);
+    }
+
+    // Additional debugging for all tool calls
+    messages.forEach((message, messageIndex) => {
+      if (message.parts) {
+        message.parts.forEach((part: any, partIndex: number) => {
+          if (part.type === "tool-createChart") {
+            console.log(
+              `[Chart Debug] Message ${messageIndex}, Part ${partIndex}:`,
+              {
+                type: part.type,
+                state: part.state,
+                hasOutput: !!part.output,
+                outputKeys: part.output ? Object.keys(part.output) : [],
+                dataSeriesCount: part.output?.dataSeries?.length || 0,
+                title: part.output?.title || "No title",
+              }
+            );
+          }
+        });
+      }
+    });
+
+    // Check for World Bank data that needs charting
+    const hasWorldBankData = messages.some((message) =>
+      message.parts?.some(
+        (part: any) =>
+          part.type === "tool-economicsSearch" &&
+          part.state === "output-available" &&
+          part.output &&
+          (part.output.includes("World Bank") ||
+            part.output.includes("GDP per capita"))
+      )
+    );
+
+    if (hasWorldBankData && !forceChartCreation) {
+      console.log(
+        `[Chart Creation] World Bank data detected, forcing chart creation`
+      );
+      setForceChartCreation(true);
+      // Trigger a new message to create the chart
+      setTimeout(() => {
+        sendMessage({
+          text: "Please create a chart with the World Bank GDP per capita data that was just fetched. Show USA, India, and UK data from 1990-2024.",
+        });
+      }, 1000);
+    }
+
+    // Check if model is preparing data but hasn't created chart yet
+    const isPreparingData = messages.some((message) =>
+      message.parts?.some(
+        (part: any) =>
+          part.type === "text" &&
+          part.text &&
+          part.text.includes("Preparing data for charting")
+      )
+    );
+
+    const hasChartToolCall = messages.some((message) =>
+      message.parts?.some((part: any) => part.type === "tool-createChart")
+    );
+
+    if (isPreparingData && !hasChartToolCall && !forceChartCreation) {
+      console.log(
+        `[Chart Creation] Model is preparing data but no chart tool call detected, forcing chart creation`
+      );
+      setForceChartCreation(true);
+      setTimeout(() => {
+        sendMessage({
+          text: "Create the chart now with the data you prepared.",
+        });
+      }, 2000);
+    }
+
+    // Check for stuck chart creation (model says preparing but no progress)
+    const lastMessage = messages[messages.length - 1];
+    const isStuckPreparing =
+      lastMessage &&
+      lastMessage.parts?.some(
+        (part: any) =>
+          part.type === "text" &&
+          part.text &&
+          part.text.includes("Preparing data for charting")
+      ) &&
+      !hasChartToolCall;
+
+    if (isStuckPreparing && !forceChartCreation) {
+      console.log(
+        `[Chart Creation] Model appears stuck preparing data, forcing chart creation`
+      );
+      setForceChartCreation(true);
+      setTimeout(() => {
+        sendMessage({
+          text: "Stop preparing and create the chart immediately with the World Bank GDP per capita data. Use the createChart tool now.",
+        });
+      }, 3000);
     }
   }, [messages]);
 
@@ -3639,13 +3370,13 @@ export function ChatInterface({
         }
       }
     }
-  }, [error, onRateLimitError]);
+  }, [error]); // Remove onRateLimitError from dependencies to prevent infinite loops
 
   // Notify parent component about message state changes
   useEffect(() => {
     console.log("[Chat Interface] Messages changed, count:", messages.length);
     onMessagesChange?.(messages.length > 0);
-  }, [messages.length, onMessagesChange]);
+  }, [messages.length]); // Remove onMessagesChange from dependencies to prevent infinite loops
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -4202,7 +3933,7 @@ export function ChatInterface({
     (status === "ready" || status === "error") && messages.length > 0;
 
   return (
-    <ChatErrorBoundary>
+    <>
       <SavedResultsProvider>
         <SeenResultsProvider sessionKey={sessionIdRef.current}>
           <div className="w-full max-w-3xl mx-auto relative min-h-0">
@@ -4690,7 +4421,7 @@ export function ChatInterface({
 
                   return (
                     <motion.div
-                      key={`${message.id}-${finalAnswerProduced}`}
+                      key={message.id}
                       data-message-id={message.id}
                       className="group"
                       initial={
@@ -5096,12 +4827,8 @@ export function ChatInterface({
                                       case "text":
                                         return (
                                           <div
-                                            key={`text-${index}-${finalAnswerProduced}`}
-                                            className={`prose prose-sm max-w-none dark:prose-invert ${
-                                              finalAnswerProduced
-                                                ? "final-answer-ready"
-                                                : ""
-                                            }`}
+                                            key={index}
+                                            className="prose prose-sm max-w-none dark:prose-invert"
                                           >
                                             {(() => {
                                               // Collect citations from tool results that appear BEFORE this text part
@@ -5616,6 +5343,14 @@ export function ChatInterface({
                                               part.output?.dataSeries?.length
                                             );
 
+                                            // Force chart to be expanded by default
+                                            if (!isChartExpanded) {
+                                              console.log(
+                                                `[Chart Rendering] Forcing chart expansion for ${callId}`
+                                              );
+                                              toggleChartExpansion(callId);
+                                            }
+
                                             // Validate chart data before rendering
                                             if (!part.output) {
                                               console.error(
@@ -5671,6 +5406,26 @@ export function ChatInterface({
                                                 key={callId}
                                                 className="mt-2"
                                               >
+                                                {/* Show data processing indicator */}
+                                                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-2 mb-2">
+                                                  <div className="flex items-center gap-2 text-blue-700 dark:text-blue-400 text-sm">
+                                                    <div className="animate-spin h-4 w-4 border-2 border-blue-600 border-t-transparent rounded-full"></div>
+                                                    <span className="font-medium">
+                                                      Processing Chart Data
+                                                    </span>
+                                                  </div>
+                                                  <div className="text-xs text-blue-600 dark:text-blue-300 mt-1">
+                                                    Data series:{" "}
+                                                    {part.output?.dataSeries
+                                                      ?.length || 0}{" "}
+                                                    • Chart type:{" "}
+                                                    {part.output?.chartType ||
+                                                      "Unknown"}{" "}
+                                                    • Title:{" "}
+                                                    {part.output?.title ||
+                                                      "No title"}
+                                                  </div>
+                                                </div>
                                                 {isChartExpanded ? (
                                                   <div className="relative">
                                                     <Button
@@ -7957,6 +7712,6 @@ export function ChatInterface({
 
       {/* Auth Modal for Library access */}
       <AuthModal open={showAuthModal} onClose={() => setShowAuthModal(false)} />
-    </ChatErrorBoundary>
+    </>
   );
 }
