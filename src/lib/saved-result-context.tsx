@@ -190,7 +190,7 @@ export function SavedResultsProvider({
     };
 
     loadCollectionsFromSupabase();
-  }, []);
+  }, [activeCollectionId, collections]);
 
   useEffect(() => {
     try {

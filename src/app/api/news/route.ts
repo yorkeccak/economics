@@ -7,9 +7,10 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const refresh = searchParams.get("refresh") === "true";
+    const country = searchParams.get("country") || "global";
 
     // Check cache first
-    const cachePath = path.join(process.cwd(), "news-cache.json");
+    const cachePath = path.join(process.cwd(), `news-cache-${country}.json`);
     const cacheExists = fs.existsSync(cachePath);
 
     if (cacheExists && !refresh) {
@@ -36,25 +37,64 @@ export async function GET(request: NextRequest) {
       try {
         const valyu = new Valyu(valyuApiKey, "https://api.valyu.network/v1");
 
-        // Search for international news from different countries and sources
-        const newsQueries = [
-          "international news today",
-          "world news today",
-          "European news today",
-          "Asian news today",
-          "African news today",
-          "Latin American news today",
-          "Middle East news today",
-          "global politics today",
-          "international business news today",
-          "world sports news today",
-        ];
+        // Generate country-specific news queries using template
+        const getCountryQueries = (country: string) => {
+          // Country name mapping for better search results
+          const countryNames = {
+            global: "global international",
+            us: "United States US America",
+            uk: "United Kingdom UK Britain British",
+            germany: "Germany German",
+            france: "France French",
+            japan: "Japan Japanese",
+            china: "China Chinese",
+            india: "India Indian",
+            canada: "Canada Canadian",
+            australia: "Australia Australian",
+            singapore: "Singapore Singapore",
+            mexico: "Mexico Mexican",
+            "south-korea": "South Korea Korean",
+            italy: "Italy Italian",
+            spain: "Spain Spanish",
+            russia: "Russia Russian",
+          };
 
-        console.log("Running news queries...");
+          const countryName =
+            countryNames[country as keyof typeof countryNames] || country;
 
-        // Try multiple queries to get diverse news content
+          // Base query templates with {country} placeholder
+          const queryTemplates = [
+            "{country} economics news today",
+            "{country} economic policy news today",
+            "{country} economic indicators news today",
+            "{country} economic markets news today",
+            "{country} economic development news today",
+            "{country} central bank news today",
+            "{country} economic growth news today",
+            "{country} inflation news today",
+            "{country} employment news today",
+            "{country} trade news today",
+            "{country} economic outlook news today",
+          ];
+
+          // Replace {country} placeholder with actual country names
+          return queryTemplates.map((template) =>
+            template.replace("{country}", countryName)
+          );
+        };
+
+        const newsQueries = getCountryQueries(country);
+
+        console.log(`Running news queries for country: ${country}...`);
+
+        // Run queries in parallel with early termination
+        const maxResults = 30; // Stop when we have 30 distinct results
         let allResults: any[] = [];
-        for (const query of newsQueries) {
+        let completedQueries = 0;
+        const totalQueries = newsQueries.length;
+
+        // Create a promise for each query
+        const queryPromises = newsQueries.map(async (query, index) => {
           try {
             console.log(`Searching for: ${query}`);
             const response = await valyu.search(query);
@@ -63,15 +103,39 @@ export async function GET(request: NextRequest) {
               response?.results?.length || 0,
               "results"
             );
-            if (response?.results && response.results.length > 0) {
-              allResults = [...allResults, ...response.results];
-              console.log(
-                `Added ${response.results.length} results, total: ${allResults.length}`
-              );
-            }
+            return {
+              results: response?.results || [],
+              queryIndex: index,
+              query: query,
+            };
           } catch (queryError) {
             console.error(`Error with query "${query}":`, queryError);
-            // Continue with other queries
+            return {
+              results: [],
+              queryIndex: index,
+              query: query,
+            };
+          }
+        });
+
+        // Process results as they complete, stopping when we have enough
+        for (const promise of queryPromises) {
+          const result = await promise;
+          completedQueries++;
+
+          if (result.results.length > 0) {
+            allResults = [...allResults, ...result.results];
+            console.log(
+              `Added ${result.results.length} results from "${result.query}", total: ${allResults.length}`
+            );
+          }
+
+          // Stop if we have enough results
+          if (allResults.length >= maxResults) {
+            console.log(
+              `Stopping queries early - already have ${allResults.length} results (completed ${completedQueries}/${totalQueries} queries)`
+            );
+            break;
           }
         }
 
@@ -98,7 +162,7 @@ export async function GET(request: NextRequest) {
               (item, index, self) =>
                 index === self.findIndex((t) => t.title === item.title)
             )
-            // Ban Politico and USA Today sources
+            // Ban Politico, USA Today, and Wikipedia sources
             .filter(
               (item) =>
                 !item.url.toLowerCase().includes("politico") &&
@@ -106,10 +170,13 @@ export async function GET(request: NextRequest) {
                 !item.title.toLowerCase().includes("politico") &&
                 !item.url.toLowerCase().includes("usatoday") &&
                 !item.source.toLowerCase().includes("usatoday") &&
-                !item.title.toLowerCase().includes("usatoday")
+                !item.title.toLowerCase().includes("usatoday") &&
+                !item.url.toLowerCase().includes("wikipedia") &&
+                !item.source.toLowerCase().includes("wikipedia") &&
+                !item.title.toLowerCase().includes("wikipedia")
             )
-            // Limit to 30 articles for performance
-            .slice(0, 30);
+            // Limit to 15 articles for performance
+            .slice(0, 15);
 
           console.log(`Final news items: ${newsItems.length}`);
 

@@ -1,16 +1,19 @@
-import { streamText, convertToModelMessages } from "ai";
-import { everythingTools } from "@/lib/tools";
-import { HealthcareUIMessage } from "@/lib/types";
+import { streamText, convertToModelMessages, ModelMessage } from "ai";
+import { economicsTools } from "../../../lib/tools";
+import { UIMessage } from "ai";
 import { openai, createOpenAI } from "@ai-sdk/openai";
 import { createOllama, ollama } from "ollama-ai-provider-v2";
-import { checkAnonymousRateLimit, incrementRateLimit } from "@/lib/rate-limit";
+import {
+  checkAnonymousRateLimit,
+  incrementRateLimit,
+} from "../../../lib/rate-limit";
 import { createClient } from "@supabase/supabase-js";
-import { checkUserRateLimit } from "@/lib/rate-limit";
-import { validateAccess } from "@/lib/polar-access-validation";
-import { getPolarTrackedModel } from "@/lib/polar-llm-strategy";
+import { checkUserRateLimit } from "../../../lib/rate-limit";
+import { validateAccess } from "../../../lib/polar-access-validation";
+import { getPolarTrackedModel } from "../../../lib/polar-llm-strategy";
 
 // Allow streaming responses up to 120 seconds
-export const maxDuration = 180;
+export const maxDuration = 800;
 
 export async function POST(req: Request) {
   try {
@@ -33,7 +36,7 @@ export async function POST(req: Request) {
       sessionId,
       attachments,
     }: {
-      messages: HealthcareUIMessage[];
+      messages: UIMessage[];
       sessionId?: string;
       attachments?: any[];
     } = requestData;
@@ -41,6 +44,21 @@ export async function POST(req: Request) {
       "[Chat API] Incoming messages:",
       JSON.stringify(messages, null, 2)
     );
+
+    // Log the user's query for tool call tracking
+    const userMessage = messages[messages.length - 1];
+    if (userMessage?.role === "user") {
+      console.log(
+        "[Chat API] User query:",
+        (userMessage.parts?.[0] as any)?.text || "No content"
+      );
+    }
+
+    // Debug: Check if messages is properly formatted
+    console.log("[Chat API] Messages type:", typeof messages);
+    console.log("[Chat API] Messages is array:", Array.isArray(messages));
+    console.log("[Chat API] Messages length:", messages?.length);
+    console.log("[Chat API] First message:", messages?.[0]);
 
     // If attachments are present, decode and append them to the last user message as AI SDK parts
     try {
@@ -381,10 +399,35 @@ export async function POST(req: Request) {
     );
     console.log(`[Chat API] Model info:`, modelInfo);
 
+    // Debug: Check messages before conversion
+    console.log("[Chat API] About to convert messages:", {
+      messagesType: typeof messages,
+      isArray: Array.isArray(messages),
+      length: messages?.length,
+      firstMessage: messages?.[0],
+    });
+
+    // Convert messages to the format expected by the AI SDK
+    console.log("[Chat API] Converting messages to AI SDK format");
+    let convertedMessages: ModelMessage[];
+    try {
+      convertedMessages = convertToModelMessages(messages);
+      console.log(
+        "[Chat API] Successfully converted messages:",
+        convertedMessages?.length,
+        "messages"
+      );
+    } catch (error) {
+      console.error("[Chat API] Error converting messages:", error);
+      // Fallback: return empty array if conversion fails
+      convertedMessages = [];
+      console.log("[Chat API] Using empty array as fallback");
+    }
+
     const result = streamText({
       model: selectedModel as any,
-      messages: convertToModelMessages(messages),
-      tools: everythingTools,
+      messages: convertedMessages,
+      tools: economicsTools,
       toolChoice: "auto",
       experimental_context: {
         userId: user?.id,
@@ -399,10 +442,10 @@ export async function POST(req: Request) {
           include: ["reasoning.encrypted_content"],
         },
       },
-      system: `You are a specialized AI assistant with access to comprehensive tools for clinical trials, drug information, biomedical literature, pharmaceutical analysis, Python code execution, and data visualization.
+      system: `You are a specialized AI assistant with access to comprehensive tools for economics, finance, data analysis, Python code execution, and data visualization.
       
       CRITICAL CITATION INSTRUCTIONS:
-      When you use ANY search tool (financial, web, or Wiley academic search) and reference information from the results in your response:
+      When you use ANY search tool and reference information from the results in your response:
       
       1. **Citation Format**: Use square brackets [1], [2], [3], etc.
       2. **Citation Placement**: Place citations at the END of each sentence or paragraph where you reference the information
@@ -417,72 +460,75 @@ export async function POST(req: Request) {
       - For lists, place citations after each item if from different sources
       
       Example of PROPER citation usage:
-      "Tesla reported revenue of $24.9 billion in Q3 2023, representing a 50% year-over-year increase [1]. The company's automotive gross margin reached 19.3%, exceeding analyst expectations [1][2]. Energy storage deployments surged 90% compared to the previous year [3]. These results demonstrate Tesla's strong operational performance across multiple business segments [1][2][3]."
+      "The U.S. unemployment rate declined to 3.7% in May 2023, marking its lowest level in over five decades [1]. Consumer Price Index (CPI) inflation eased to 4.0% year-over-year, reflecting a slowdown in price increases [1][2]. Meanwhile, real GDP grew at an annualized rate of 2.1% in the first quarter, supported by strong consumer spending and business investment [3]. These indicators highlight the resilience of the U.S. economy amid global uncertainties [1][2][3]."
       
-      You can:
-         
-         - Execute Python code for biostatistics, clinical data analysis, drug discovery calculations, and scientific computations using the codeExecution tool (runs in a secure Daytona Sandbox)
-         - The Python environment can install packages via pip at runtime inside the sandbox (e.g., numpy, pandas, scikit-learn)
-         - Visualization libraries (matplotlib, seaborn, plotly) may work inside Daytona. However, by default, prefer the built-in chart creation tool for standard time series and comparisons. Use Daytona for advanced or custom visualizations only when necessary.
-         - Search for clinical trials data using the clinicalTrialsSearch tool (ongoing trials, completed studies, drug efficacy data)
-         - Look up drug information using the drugInformationSearch tool (FDA labels, contraindications, side effects, drug interactions)
-         - Search biomedical literature using the biomedicalLiteratureSearch tool (PubMed, ArXiv, peer-reviewed papers)
-         - Analyze pharmaceutical companies using the pharmaCompanyAnalysis tool (SEC filings, financial data, competitive intelligence)
-         - Perform comprehensive searches using the comprehensive everythingSearch tool (across all medical data sources)  
-         - Search the web for general news, medical breakthroughs, and health policy updates using the webSearch tool
-         - Search the web for general information using the web search tool (any topic with relevance scoring and cost control)
-         - Create interactive charts and visualizations using the chart creation tool (line charts, bar charts, area charts with multiple data series)
+      AVAILABLE TOOLS:
+      
+      **Data Analysis & Visualization:**
+      - createChart: Create interactive charts for economic data visualization (line, bar, area charts)
+      - codeExecution: Execute Python code securely in Daytona Sandbox for econometric analysis, financial modeling, and quantitative research
+      
+      **Economic Data Search Tools:**
+      - economicsSearch: Comprehensive search across all major economic data sources (real-time market data, earnings reports, statistical data, regulatory updates, economics news)
+      - getFREDSeriesData: Get detailed time series data from FRED using specific series IDs
+      - getBLSSeriesData: Get detailed time series data from BLS using specific series IDs
+      - getWBDetails: Get detailed information about World Bank indicators using specific indicator IDs
+      - getUSASpendingDetails: Get detailed information about specific USA Spending federal awards, contracts, or grants
+      
+      **Web Search:**
+      - webSearch: Search the web for general information on any topic with relevance scoring and cost control
 
       **CRITICAL NOTE**: You must only make max 5 parallel tool calls at a time.
 
       **CRITICAL INSTRUCTIONS**: Your reports must be incredibly thorough and detailed, explore everything that is relevant to the user's query that will help to provide
-      the perfect response that is of a level expected of an elite level medical researcher or pharmaceutical analyst at a leading biomedical research institution.
+      the perfect response that is of a level expected of an elite level economic researcher or financial analyst at a leading economic research institution.
       
       For data searches, you can access:
-      • Clinical trials from ClinicalTrials.gov (phases, enrollment, outcomes)
-      • FDA drug labels and medication information from DailyMed
-      • Biomedical literature from PubMed and ArXiv
-      • Pharmaceutical company SEC filings and financial reports
-      • Scientific research papers and peer-reviewed studies
-      • Drug development pipelines and regulatory approvals
-      
-      For biomedical literature searches, you can access:
-      • Peer-reviewed medical and biological journals
-      • Clinical research studies and meta-analyses
-      • Drug discovery and development papers
-      • Genomics and precision medicine research
-      • Epidemiological studies and public health data
-      • Medical device trials and regulatory submissions
-      
-               For web searches, you can find information on:
-         • Current events and news from any topic
-         • Research topics with high relevance scoring
-         • Educational content and explanations
-         • Technology trends and developments
-         • General knowledge across all domains
-         
-         For data visualization, you can create charts when users want to:
-         • Compare clinical trial outcomes across different drugs or treatments
-         • Visualize patient enrollment, efficacy rates, or adverse events over time
-         • Display drug development pipeline stages or trial phase progression
-         • Show relationships between different data series
-         • Present clinical or research data in an easy-to-understand visual format
+      • Macroeconomic indicators from FRED (Federal Reserve Economic Data: GDP, inflation, unemployment, money supply, etc.)
+      • Labor market statistics from the U.S. Bureau of Labor Statistics (BLS: employment, wages, CPI, labor force participation)
+      • Global economic and development data from the World Bank (international development, poverty, economic growth, country-level data)
+      • Federal spending data from USA Spending (government contracts, grants, awards, federal procurement)
+      • Company financial statements and SEC filings (balance sheets, income statements, financial ratios)
+      • Economic research papers and peer-reviewed studies
+      • Financial market data, stock prices, and economic forecasts
 
-         Whenever you have time series data for the user (such as patient outcomes, drug efficacy over time, or any clinical data with temporal values), always visualize it using the chart creation tool. Use a line chart by default for time series data, unless another chart type is more appropriate for the context. If you retrieve or generate time series data, automatically create a chart to help the user understand trends and patterns.
+      For economics literature searches, you can access:
+      • Peer-reviewed economics and finance journals
+      • Economic research studies and meta-analyses
+      • Working papers and policy briefs
+      • International development and macroeconomic research
+      • Financial market analysis and reports
+      • Economic history and comparative studies
+
+      For web searches, you can find information on:
+      • Current events and news in economics and finance
+      • Research topics with high relevance scoring
+      • Educational content and economic explanations
+      • Financial technology trends and developments
+      • General knowledge across all economics and finance domains
+
+      For data visualization, you can create charts when users want to:
+      • Compare economic indicators across countries, regions, or time periods
+      • Visualize trends in GDP, inflation, unemployment, or other macroeconomic variables
+      • Display company financial performance or market data over time
+      • Show relationships between different economic data series
+      • Present economic or financial data in an easy-to-understand visual format
+
+         Whenever you have time series data for the user (such as GDP growth over time, inflation rates by year, unemployment trends, stock prices, or any economic indicator with temporal values), always visualize it using the chart creation tool. Use a line chart by default for time series economic data, unless another chart type is more appropriate for the context. If you retrieve or generate time series data, automatically create a chart to help the user understand economic trends and patterns.
 
          CRITICAL: When using the createChart tool, you MUST format the dataSeries exactly like this:
          dataSeries: [
            {
-             name: "Drug A Efficacy",
+             name: "US GDP Growth",
              data: [
-               {x: "Week 0", y: 0},
-               {x: "Week 4", y: 45.5},
-               {x: "Week 8", y: 67.8}
+               {x: "2019", y: 2.3},
+               {x: "2020", y: -3.4},
+               {x: "2021", y: 5.7}
              ]
            }
          ]
          
-         Each data point requires an x field (date/label) and y field (numeric value). Do NOT use other formats like "datasets" or "labels" - only use the dataSeries format shown above.
+         Each data point requires an x field (date/label, e.g., year or quarter) and y field (numeric value, e.g., GDP growth rate, inflation percentage, unemployment rate, etc.). Do NOT use other formats like "datasets" or "labels" - only use the dataSeries format shown above.
 
          When creating charts:
          • Use line charts for time series data (patient outcomes, drug efficacy over time)
@@ -533,16 +579,13 @@ export async function POST(req: Request) {
          NEVER write LaTeX code directly in text like \frac{r}{n} or \times - it must be inside <math> tags.
          NEVER use $ or $$ delimiters - only use <math>...</math> tags.
          This makes financial formulas much more readable and professional.
-         Choose the clinicalTrialsSearch tool for clinical trial data and study protocols.
-         Choose the drugInformationSearch tool for FDA drug labels and medication information.
-         Choose the biomedicalLiteratureSearch tool for scientific papers and research studies.
-         Choose the pharmaCompanyAnalysis tool for pharmaceutical company analysis and competitive intelligence.
-         Choose the comprehensiveeverythingSearch tool when you need data from multiple sources.
-         Choose the web search tool for general topics, current events, research, and non-financial information.
-         Choose the chart creation tool when users want to visualize data, compare metrics, or see trends over time.
+         Choose the getBLSSeriesData tool for U.S. Bureau of Labor Statistics data (e.g., labor market, wages, employment).
+         Choose the economicsSearch tool for financial market data, company fundamentals, and macroeconomic indicators.
+         Choose the web search tool for general economic topics, news, current events, or non-financial information.
+         Choose the chart creation tool when users want to visualize economic data, compare metrics, or see trends over time.
 
          When users ask for charts or data visualization, or when you have time series data:
-         1. First gather the necessary data (using financial search or web search if needed)
+         1. First gather the necessary data (using economics search or web search if needed)
          2. Then create an appropriate chart with that data (always visualize time series data)
          3. Ensure the chart has a clear title, proper axis labels, and meaningful data series names
          4. Colors are automatically assigned for optimal visual distinction
@@ -562,7 +605,7 @@ export async function POST(req: Request) {
       - Always continue until you have completed all required tool calls and provided a summary or visualization if appropriate.
       - NEVER just show Python code as text - if the user wants calculations or Python code, you MUST use the codeExecution tool to run it
       - When users say "calculate", "compute", or mention Python code, this is a COMMAND to use the codeExecution tool, not a request to see code
-      - NEVER suggest using Python to fetch data from the internet or APIs. All data retrieval must be done via the financialSearch or webSearch tools.
+      - NEVER suggest using Python to fetch data from the internet or APIs. All data retrieval must be done via the economicsSearch or webSearch tools.
       - Remember: The Python environment runs in the cloud with NumPy, pandas, and scikit-learn available, but NO visualization libraries.
       
       CRITICAL WORKFLOW ORDER:
@@ -584,15 +627,15 @@ export async function POST(req: Request) {
          - Use headers (##, ###) to organize sections clearly
          - Use blockquotes (>) for key insights or summaries
 
-      2. **Tables for Financial Data:**
-         - Present earnings, revenue, cash flow, and balance sheet data in markdown tables
+      2. **Tables for Economic Data:**
+         - Present GDP, inflation, unemployment, and other economic indicators in markdown tables
          - Format numbers with proper comma separators (e.g., $1,234,567)
          - Include percentage changes and comparisons
          - Example:
-         | Metric | Control | Treatment | P-Value |
-         |--------|---------|-----------|----------|
-         | Response Rate | 32.5% | 67.8% | <0.001 |
-         | Adverse Events | 8.2% | 12.4% | 0.042 |
+         | Country | GDP Growth | Inflation Rate | Unemployment |
+         |---------|------------|----------------|--------------|
+         | United States | 2.1% | 3.2% | 3.7% |
+         | Germany | 1.5% | 2.8% | 5.2% |
 
       3. **Mathematical Formulas:**
          - Always use <math> tags for any mathematical expressions
@@ -636,17 +679,17 @@ export async function POST(req: Request) {
          - Each unique search result gets ONE citation number used consistently
          - Citations are MANDATORY for:
            • Specific numbers, statistics, percentages
-           • Clinical trial results and drug efficacy data  
+           • Economic indicators and financial data  
            • Quotes or paraphrased statements
            • Market data and trends
            • Any factual claims from search results
          
-         **CRITICAL for Clinical Trials:**
-         - EVERY clinical trial mentioned MUST have an inline citation [N]
-         - When citing clinical trials, use format: "The trial showed X result [1]" or "NCT04132960 demonstrated Y [2]"
-         - Each NCT ID mentioned should have its corresponding citation immediately after
-         - When using getClinicalTrialDetails, cite the detailed information retrieved
-         - Example: "The Phase 3 RECOVERY trial (NCT04381936) enrolled over 40,000 patients [1] and demonstrated that dexamethasone reduced mortality by 17% [1]."
+         **CRITICAL for Economics Data:**
+         - EVERY economic data point, statistic, or indicator mentioned MUST have an inline citation [N]
+         - When citing economic data, use format: "The data showed X result [1]" or "The US unemployment rate reached 3.5% in 2023 [2]"
+         - Each unique data series (e.g., FRED ID, BLS series, World Bank indicator) should have its corresponding citation immediately after
+         - When using getFREDDataDetails, getBLSDetails, or getWBDataDetails, cite the detailed information retrieved
+         - Example: "According to FRED series UNRATE, the US unemployment rate fell to 3.5% in July 2023 [1]."
       ---
       `,
     });

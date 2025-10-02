@@ -100,7 +100,7 @@ export function SavedLibrary({
         interventions: data.interventions,
       };
     });
-  }, [saved.getActiveCollectionItems, saved.activeCollectionId]);
+  }, [saved]);
 
   const hasItems = mappedItems.length > 0;
 

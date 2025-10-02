@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import * as HoverCardPrimitive from "@radix-ui/react-hover-card";
+import Image from "next/image";
 import { Badge } from "@/components/ui/badge";
 import {
   Carousel,
@@ -10,7 +11,12 @@ import {
   useCarousel,
 } from "@/components/ui/carousel";
 import { cn } from "@/lib/utils";
-import { ExternalLink, FileText, ChevronLeft, ChevronRight } from "lucide-react";
+import {
+  ExternalLink,
+  FileText,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
 
 // Container for citation text and card
 export const InlineCitation = React.forwardRef<
@@ -30,11 +36,7 @@ export const InlineCitationText = React.forwardRef<
   HTMLSpanElement,
   React.ComponentProps<"span">
 >(({ className, ...props }, ref) => (
-  <span
-    ref={ref}
-    className={cn("relative", className)}
-    {...props}
-  />
+  <span ref={ref} className={cn("relative", className)} {...props} />
 ));
 InlineCitationText.displayName = "InlineCitationText";
 
@@ -62,18 +64,22 @@ export const InlineCitationCardTrigger = React.forwardRef<
   }, []);
 
   const firstSource = sources.length > 0 ? sources[0] : "";
-  const hostname = React.useMemo(() => getHostname(firstSource), [firstSource, getHostname]);
+  const hostname = React.useMemo(
+    () => getHostname(firstSource),
+    [firstSource, getHostname]
+  );
   const count = sources.length > 1 ? ` +${sources.length - 1}` : "";
-  
+
   // Check if it's a special source that needs a logo
-  const isValyu = React.useMemo(() => 
-    hostname.includes('valyu') || hostname.includes('deepfinance'),
+  const isValyu = React.useMemo(
+    () => hostname.includes("valyu") || hostname.includes("deepfinance"),
     [hostname]
   );
-  const isWiley = React.useMemo(() => 
-    hostname.includes('wiley') || 
-    hostname.includes('onlinelibrary.wiley') ||
-    firstSource.includes('isbn'),
+  const isWiley = React.useMemo(
+    () =>
+      hostname.includes("wiley") ||
+      hostname.includes("onlinelibrary.wiley") ||
+      firstSource.includes("isbn"),
     [hostname, firstSource]
   );
 
@@ -81,12 +87,12 @@ export const InlineCitationCardTrigger = React.forwardRef<
     if (isValyu) {
       return (
         <>
-          <img 
-            src="/valyu.svg" 
-            alt="Valyu" 
+          <Image
+            src="/valyu.svg"
+            alt="Valyu"
             className="h-6 w-6 inline-block"
-            loading="eager"
-            decoding="async"
+            width={24}
+            height={24}
           />
           {count}
         </>
@@ -95,19 +101,24 @@ export const InlineCitationCardTrigger = React.forwardRef<
     if (isWiley) {
       return (
         <>
-          <img 
-            src="/wy.svg" 
-            alt="Wiley" 
+          <Image
+            src="/wy.svg"
+            alt="Wiley"
             className="h-6 w-6 inline-block opacity-80"
-            loading="eager"
-            decoding="async"
-            style={{ filter: 'none' }}
+            width={24}
+            height={24}
+            style={{ filter: "none" }}
           />
           {count}
         </>
       );
     }
-    return <>{hostname}{count}</>;
+    return (
+      <>
+        {hostname}
+        {count}
+      </>
+    );
   }, [isValyu, isWiley, hostname, count]);
 
   return (
@@ -156,9 +167,7 @@ export const InlineCitationCardBody = React.forwardRef<
         avoidCollisions={true}
         {...props}
       >
-        <div className="w-full">
-          {children}
-        </div>
+        <div className="w-full">{children}</div>
       </HoverCardPrimitive.Content>
     </HoverCardPrimitive.Portal>
   );
@@ -178,7 +187,7 @@ export const InlineCitationCarousel = React.forwardRef<
       loop: true,
       containScroll: false,
       skipSnaps: false,
-      dragFree: false
+      dragFree: false,
     }}
     {...props}
   />
@@ -190,8 +199,9 @@ export const InlineCitationCarouselHeader = React.forwardRef<
   HTMLDivElement,
   React.ComponentProps<"div">
 >(({ className, children, ...props }, ref) => {
-  const { scrollPrev, scrollNext, canScrollPrev, canScrollNext } = useCarousel();
-  
+  const { scrollPrev, scrollNext, canScrollPrev, canScrollNext } =
+    useCarousel();
+
   return (
     <div
       ref={ref}
@@ -256,11 +266,7 @@ export const InlineCitationCarouselContent = React.forwardRef<
   HTMLDivElement,
   React.ComponentProps<typeof CarouselContent>
 >(({ className, ...props }, ref) => (
-  <CarouselContent
-    ref={ref}
-    className={cn("-ml-0", className)}
-    {...props}
-  />
+  <CarouselContent ref={ref} className={cn("-ml-0", className)} {...props} />
 ));
 InlineCitationCarouselContent.displayName = "InlineCitationCarouselContent";
 
@@ -289,78 +295,94 @@ export const InlineCitationSource = React.forwardRef<
     doi?: string;
     relevanceScore?: number;
   }
->(({ title, url, description, date, authors, doi, relevanceScore, className, ...props }, ref) => {
-  const getHostname = (url: string) => {
-    try {
-      const urlObj = new URL(url);
-      return urlObj.hostname.replace(/^www\./, "");
-    } catch {
-      return "source";
-    }
-  };
+>(
+  (
+    {
+      title,
+      url,
+      description,
+      date,
+      authors,
+      doi,
+      relevanceScore,
+      className,
+      ...props
+    },
+    ref
+  ) => {
+    const getHostname = (url: string) => {
+      try {
+        const urlObj = new URL(url);
+        return urlObj.hostname.replace(/^www\./, "");
+      } catch {
+        return "source";
+      }
+    };
 
-  return (
-    <div
-      ref={ref}
-      className={cn("p-3 space-y-1.5 w-full", className)}
-      {...props}
-    >
-      <div className="space-y-1">
-        <div className="flex items-start justify-between gap-2">
-          <h4 className="text-xs font-medium leading-tight line-clamp-2 flex-1">
-            {title}
-          </h4>
-          <FileText className="h-3 w-3 text-muted-foreground flex-shrink-0 mt-0.5" />
-        </div>
-        
-        {description && (
-          <p className="text-[10px] text-muted-foreground line-clamp-2 leading-snug">
-            {description}
-          </p>
-        )}
-      </div>
-
-      <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground flex-wrap">
-        <span className="truncate max-w-[100px]">{getHostname(url)}</span>
-        {date && (
-          <>
-            <span>·</span>
-            <span className="truncate max-w-[60px]">{date}</span>
-          </>
-        )}
-        {relevanceScore !== undefined && (
-          <>
-            <span>·</span>
-            <span>{Math.round(relevanceScore * 100)}%</span>
-          </>
-        )}
-      </div>
-
-      {authors && authors.length > 0 && (
-        <div className="text-[10px] text-muted-foreground">
-          <span className="font-medium">Authors:</span> {authors.slice(0, 2).join(", ")}
-          {authors.length > 2 && ` +${authors.length - 2}`}
-        </div>
-      )}
-
-      {doi && (
-        <div className="text-[10px] bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 px-1.5 py-0.5 rounded inline-block">
-          DOI: {doi}
-        </div>
-      )}
-
-      <a
-        href={url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="inline-flex items-center gap-1 text-[11px] text-blue-600 dark:text-blue-400 hover:underline"
+    return (
+      <div
+        ref={ref}
+        className={cn("p-3 space-y-1.5 w-full", className)}
+        {...props}
       >
-        <ExternalLink className="h-3 w-3" />
-        View source
-      </a>
-    </div>
-  );
-});
+        <div className="space-y-1">
+          <div className="flex items-start justify-between gap-2">
+            <h4 className="text-xs font-medium leading-tight line-clamp-2 flex-1">
+              {title}
+            </h4>
+            <FileText className="h-3 w-3 text-muted-foreground flex-shrink-0 mt-0.5" />
+          </div>
+
+          {description && (
+            <p className="text-[10px] text-muted-foreground line-clamp-2 leading-snug">
+              {description}
+            </p>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground flex-wrap">
+          <span className="truncate max-w-[100px]">{getHostname(url)}</span>
+          {date && (
+            <>
+              <span>·</span>
+              <span className="truncate max-w-[60px]">{date}</span>
+            </>
+          )}
+          {relevanceScore !== undefined && (
+            <>
+              <span>·</span>
+              <span>{Math.round(relevanceScore * 100)}%</span>
+            </>
+          )}
+        </div>
+
+        {authors && authors.length > 0 && (
+          <div className="text-[10px] text-muted-foreground">
+            <span className="font-medium">Authors:</span>{" "}
+            {authors.slice(0, 2).join(", ")}
+            {authors.length > 2 && ` +${authors.length - 2}`}
+          </div>
+        )}
+
+        {doi && (
+          <div className="text-[10px] bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 px-1.5 py-0.5 rounded inline-block">
+            DOI: {doi}
+          </div>
+        )}
+
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 text-[11px] text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          <ExternalLink className="h-3 w-3" />
+          View source
+        </a>
+      </div>
+    );
+  }
+);
 InlineCitationSource.displayName = "InlineCitationSource";
 
 // Styled blockquote for excerpts

@@ -3,6 +3,119 @@
 import { useChat } from "@ai-sdk/react";
 import { useQueryClient, useMutation } from "@tanstack/react-query";
 import React from "react";
+
+// Global Error Boundary for Chat Interface
+class ChatErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error?: Error }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error(
+      `[Chat Error Boundary] Error in chat interface:`,
+      error,
+      errorInfo
+    );
+
+    // Check if it's an empty error object
+    if (!error || Object.keys(error).length === 0) {
+      console.warn(
+        "[Chat Error Boundary] Empty error object caught - ignoring"
+      );
+      // Reset the error boundary state
+      this.setState({ hasError: false, error: undefined });
+      return;
+    }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-4 m-4">
+          <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
+            <AlertCircle className="h-4 w-4" />
+            <span className="font-medium">Chat Interface Error</span>
+          </div>
+          <div className="text-sm text-red-600 dark:text-red-300">
+            Error: {this.state.error?.message || "Unknown error"}
+          </div>
+          <div className="mt-2">
+            <button
+              onClick={() =>
+                this.setState({ hasError: false, error: undefined })
+              }
+              className="text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-200 underline"
+            >
+              Try Again
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+// Error Boundary for Chart Rendering
+class ChartErrorBoundary extends React.Component<
+  { children: React.ReactNode; callId: string },
+  { hasError: boolean; error?: Error }
+> {
+  constructor(props: { children: React.ReactNode; callId: string }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error(
+      `[Chart Error Boundary] Error in chart ${this.props.callId}:`,
+      error,
+      errorInfo
+    );
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-4">
+          <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
+            <AlertCircle className="h-4 w-4" />
+            <span className="font-medium">Chart Rendering Error</span>
+          </div>
+          <div className="text-sm text-red-600 dark:text-red-300">
+            Error: {this.state.error?.message || "Unknown error"}
+          </div>
+          <div className="mt-2">
+            <button
+              onClick={() =>
+                this.setState({ hasError: false, error: undefined })
+              }
+              className="text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-200 underline"
+            >
+              Try Again
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+import { MovingBorderButton } from "@/components/ui/moving-border";
 import {
   DefaultChatTransport,
   lastAssistantMessageIsCompleteWithToolCalls,
@@ -68,6 +181,7 @@ import {
   Wrench,
   Check,
   CheckCircle,
+  XCircle,
   Copy,
   Clock,
   Book,
@@ -337,7 +451,6 @@ const markdownComponents = {
     </div>
   ),
 };
-
 // Memoized Markdown renderer to avoid re-parsing on unrelated state updates
 const MemoizedMarkdown = memo(function MemoizedMarkdown({
   text,
@@ -369,7 +482,23 @@ const MemoizedMarkdown = memo(function MemoizedMarkdown({
 // Helper function to extract search results for carousel display
 const extractSearchResults = (jsonOutput: string) => {
   try {
+    console.log("[extractSearchResults] Input:", jsonOutput);
+
+    // Check if the output is a plain text error message or non-JSON content
+    if (
+      typeof jsonOutput === "string" &&
+      !jsonOutput.trim().startsWith("{") &&
+      !jsonOutput.trim().startsWith("[")
+    ) {
+      // This is likely a plain text error message or non-JSON content (like code execution output)
+      console.log(
+        "[extractSearchResults] Non-JSON content detected, returning empty array"
+      );
+      return [];
+    }
+
     const data = JSON.parse(jsonOutput);
+    console.log("[extractSearchResults] Parsed data:", data);
 
     if (data.results && Array.isArray(data.results)) {
       const mappedResults = data.results.map((result: any, index: number) => {
@@ -444,6 +573,8 @@ const extractSearchResults = (jsonOutput: string) => {
     }
     return [];
   } catch (error) {
+    console.warn("Failed to parse search results:", error);
+    console.warn("Raw output:", jsonOutput);
     return [];
   }
 };
@@ -827,7 +958,6 @@ export const SearchResultCard = ({
           <div className="text-sm text-gray-600 dark:text-gray-400 space-y-2">
             <div className="flex items-center gap-2 flex-wrap">
               {/* <span>{result.source}</span> */}
-              {result.date && <span>• {result.date}</span>}
               {result.relevanceScore && (
                 <span className="text-xs bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">
                   {(result.relevanceScore * 100).toFixed(0)}% relevance
@@ -1527,6 +1657,21 @@ export function ChatInterface({
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
+  const [chartRenderKey, setChartRenderKey] = useState<number>(0);
+  const [reloadCount, setReloadCount] = useState<number>(0);
+  const [errorLoopTimeout, setErrorLoopTimeout] =
+    useState<NodeJS.Timeout | null>(null);
+  const [consecutiveEmptyErrors, setConsecutiveEmptyErrors] =
+    useState<number>(0);
+  const [circuitBreakerTimeout, setCircuitBreakerTimeout] =
+    useState<NodeJS.Timeout | null>(null);
+  const [suppressEmptyErrors, setSuppressEmptyErrors] =
+    useState<boolean>(false);
+  const [finalAnswerProduced, setFinalAnswerProduced] = useState(false);
+  const [emptyErrorCount, setEmptyErrorCount] = useState(0);
+  const [expandedFredResults, setExpandedFredResults] = useState<Set<string>>(
+    new Set()
+  );
   const [isRateLimited, setIsRateLimited] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | undefined>(
     undefined
@@ -1550,6 +1695,26 @@ export function ChatInterface({
     Record<string, SavedItem[]>
   >({});
   const [fastMode, setFastMode] = useState(false);
+  const [selectedCountry, setSelectedCountry] = useState("global");
+
+  const countries = [
+    { value: "global", label: "🌍 Global" },
+    { value: "us", label: "🇺🇸 United States" },
+    { value: "uk", label: "🇬🇧 United Kingdom" },
+    { value: "germany", label: "🇩🇪 Germany" },
+    { value: "france", label: "🇫🇷 France" },
+    { value: "japan", label: "🇯🇵 Japan" },
+    { value: "china", label: "🇨🇳 China" },
+    { value: "india", label: "🇮🇳 India" },
+    { value: "canada", label: "🇨🇦 Canada" },
+    { value: "australia", label: "🇦🇺 Australia" },
+    { value: "singapore", label: "🇸🇬 Singapore" },
+    { value: "mexico", label: "🇲🇽 Mexico" },
+    { value: "south-korea", label: "🇰🇷 South Korea" },
+    { value: "italy", label: "🇮🇹 Italy" },
+    { value: "spain", label: "🇪🇸 Spain" },
+    { value: "russia", label: "🇷🇺 Russia" },
+  ];
   const [inputMenuOpen, setInputMenuOpen] = useState(false);
   const [showFileDropzone, setShowFileDropzone] = useState(false);
   const [dropzoneFiles, setDropzoneFiles] = useState<File[] | undefined>(
@@ -1569,6 +1734,7 @@ export function ChatInterface({
   const libraryContextRef = useRef<SavedItem[]>([]);
   const lastSentContextRef = useRef<SavedItem[]>([]);
   const messageIdsRef = useRef<string[]>([]);
+  const lastReloadTimeRef = useRef<number>(0);
   const effectiveFastMode = fastModeProp ?? fastMode;
   const setEffectiveFastMode = onFastModeChange ?? setFastMode;
   // Ref to always send the freshest fastMode to the API
@@ -2621,7 +2787,19 @@ export function ChatInterface({
     transport,
     // Automatically submit when all tool results are available
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
-    onFinish: () => {
+    onFinish: (message) => {
+      console.log("[ChatInterface] onFinish called:", {
+        message,
+        messageId: message?.message?.id || "unknown",
+        messageRole: message?.message?.role || "unknown",
+        messageParts: message?.message?.parts?.length || 0,
+        currentMessagesCount: messages.length,
+      });
+
+      // Mark that a final answer has been produced
+      console.log("[ChatInterface] onFinish - final answer produced");
+      setFinalAnswerProduced(true);
+
       // Sync with server when chat completes (server has definitely processed increment by now)
       if (user) {
         console.log(
@@ -2630,9 +2808,424 @@ export function ChatInterface({
         queryClient.invalidateQueries({ queryKey: ["rateLimit"] });
       }
     },
+    onError: (error) => {
+      // Ultra-aggressive empty error detection and suppression
+      const isEmptyError =
+        !error ||
+        error === null ||
+        error === undefined ||
+        (typeof error === "object" && Object.keys(error).length === 0) ||
+        (typeof error === "string" && (error as string).trim() === "") ||
+        (typeof error === "object" && JSON.stringify(error) === "{}") ||
+        (typeof error === "object" && JSON.stringify(error) === "null") ||
+        (typeof error === "object" && JSON.stringify(error) === "undefined");
+
+      if (isEmptyError) {
+        console.warn(
+          "[ChatInterface] Empty error detected - completely suppressing"
+        );
+        return;
+      }
+
+      // If we're in suppression mode, ignore all errors
+      if (suppressEmptyErrors) {
+        console.warn(
+          "[ChatInterface] Error handling suppressed due to previous empty errors"
+        );
+        return;
+      }
+
+      // Only process non-empty errors
+      try {
+        console.error("[ChatInterface] Chat error:", error);
+
+        // Handle different types of error objects
+        let errorMessage = "Unknown error";
+        let errorString = "{}";
+
+        if (error instanceof Error) {
+          errorMessage = error.message;
+          errorString = error.toString();
+        } else if (typeof error === "string") {
+          errorMessage = error;
+          errorString = error;
+        } else if (error && typeof error === "object") {
+          errorMessage =
+            (error as any).message ||
+            (error as any).toString() ||
+            "Object error";
+          errorString = JSON.stringify(error, null, 2);
+        } else {
+          errorMessage = String(error) || "Unknown error";
+          errorString = String(error) || "{}";
+        }
+
+        console.error("[ChatInterface] Error details:", {
+          message: errorMessage,
+          cause: error?.cause || "No cause",
+          stack: error?.stack || "No stack",
+          currentSessionId,
+          status,
+          errorType: typeof error,
+          errorKeys: Object.keys(error || {}),
+          errorString: errorString,
+          isErrorObject: error instanceof Error,
+          errorConstructor: error?.constructor?.name,
+        });
+
+        // If there's a network error or duplicate item error, try to reload the session
+        const isNetworkError =
+          errorMessage.includes("terminated") ||
+          errorMessage.includes("closed") ||
+          errorMessage.includes("UND_ERR_SOCKET") ||
+          errorMessage.includes("failed to pipe response") ||
+          errorMessage.includes("NetworkError") ||
+          errorMessage.includes("fetch") ||
+          errorString.includes("terminated") ||
+          errorString.includes("closed");
+
+        const isDuplicateError =
+          errorMessage.includes("Duplicate item found") ||
+          errorString.includes("Duplicate item found");
+
+        // Also check for empty error objects that might indicate a network issue
+        const isEmptyError = !error || Object.keys(error).length === 0;
+
+        // Track consecutive empty errors for circuit breaker
+        if (isEmptyError) {
+          setConsecutiveEmptyErrors((prev) => prev + 1);
+
+          // Activate error suppression after 2 consecutive empty errors
+          if (consecutiveEmptyErrors >= 1) {
+            setSuppressEmptyErrors(true);
+            console.warn(
+              "[ChatInterface] Activating empty error suppression after consecutive empty errors",
+              { consecutiveEmptyErrors }
+            );
+          }
+
+          // Set a timeout to reset the circuit breaker after 60 seconds of no activity
+          if (circuitBreakerTimeout) {
+            clearTimeout(circuitBreakerTimeout);
+          }
+          const timeout = setTimeout(() => {
+            console.log(
+              "[ChatInterface] Circuit breaker timeout - resetting consecutive empty errors"
+            );
+            setConsecutiveEmptyErrors(0);
+            setSuppressEmptyErrors(false);
+            setCircuitBreakerTimeout(null);
+          }, 60000);
+          setCircuitBreakerTimeout(timeout);
+        } else {
+          setConsecutiveEmptyErrors(0);
+          setSuppressEmptyErrors(false);
+          if (circuitBreakerTimeout) {
+            clearTimeout(circuitBreakerTimeout);
+            setCircuitBreakerTimeout(null);
+          }
+        }
+
+        // Circuit breaker for consecutive empty errors - more aggressive for empty errors
+        const maxConsecutiveEmptyErrors = 3; // Reduced from 5 to 3 for faster activation
+        const shouldCircuitBreak =
+          consecutiveEmptyErrors >= maxConsecutiveEmptyErrors;
+
+        // Immediate circuit breaker for empty errors if we've seen any recently
+        const hasRecentEmptyErrors = consecutiveEmptyErrors > 0;
+        const shouldImmediateCircuitBreak =
+          isEmptyError && hasRecentEmptyErrors;
+
+        // More specific error detection
+        const isConnectionError =
+          errorMessage.includes("Connection") ||
+          errorMessage.includes("timeout") ||
+          errorMessage.includes("aborted") ||
+          errorString.includes("Connection") ||
+          errorString.includes("timeout") ||
+          errorString.includes("aborted");
+
+        const shouldReload =
+          currentSessionId &&
+          (isNetworkError ||
+            isDuplicateError ||
+            isEmptyError ||
+            isConnectionError) &&
+          status !== "streaming" && // Don't reload while actively streaming
+          !shouldCircuitBreak && // Don't reload if circuit breaker is active
+          !shouldImmediateCircuitBreak && // Don't reload if immediate circuit breaker is active
+          !suppressEmptyErrors; // Don't reload if empty errors are suppressed
+
+        if (isEmptyError) {
+          console.warn(
+            "[ChatInterface] Empty error object detected - this might indicate a network or connection issue",
+            { consecutiveEmptyErrors, shouldCircuitBreak }
+          );
+        }
+
+        if (isConnectionError) {
+          console.warn(
+            "[ChatInterface] Connection error detected - this might indicate a network issue"
+          );
+        }
+
+        if (shouldCircuitBreak) {
+          console.error(
+            "[ChatInterface] Circuit breaker activated - too many consecutive empty errors",
+            { consecutiveEmptyErrors, maxConsecutiveEmptyErrors }
+          );
+        }
+
+        if (shouldImmediateCircuitBreak) {
+          console.error(
+            "[ChatInterface] Immediate circuit breaker activated - empty error detected with recent empty errors",
+            { consecutiveEmptyErrors, hasRecentEmptyErrors }
+          );
+        }
+
+        if (suppressEmptyErrors) {
+          console.warn("[ChatInterface] Empty error suppression is active", {
+            consecutiveEmptyErrors,
+            suppressEmptyErrors,
+          });
+        }
+
+        if (shouldReload) {
+          // Check if we already have a recent assistant message to avoid reloading successful responses
+          const lastMessage = messages[messages.length - 1];
+          const hasRecentAssistantMessage =
+            lastMessage?.role === "assistant" &&
+            lastMessage?.parts &&
+            lastMessage.parts.length > 0;
+
+          // Check if there are any tool calls in progress or recently completed
+          const hasToolCallsInProgress = lastMessage?.parts?.some(
+            (part: any) =>
+              part.type?.startsWith("tool-") &&
+              (part.state === "input-streaming" ||
+                part.state === "input-available" ||
+                part.state === "output-available")
+          );
+
+          if (!hasRecentAssistantMessage && !hasToolCallsInProgress) {
+            const now = Date.now();
+            const timeSinceLastReload = now - lastReloadTimeRef.current;
+
+            // Prevent reloading if we've reloaded within the last 10 seconds or too many times
+            const maxReloads = 3;
+            if (timeSinceLastReload > 10000 && reloadCount < maxReloads) {
+              console.log(
+                "[ChatInterface] Error detected, reloading session to get saved message",
+                {
+                  isNetworkError,
+                  isDuplicateError,
+                  isEmptyError,
+                  isConnectionError,
+                  errorMessage,
+                  timeSinceLastReload,
+                  reloadCount,
+                  maxReloads,
+                }
+              );
+              lastReloadTimeRef.current = now;
+              setReloadCount((prev) => prev + 1);
+              setTimeout(() => {
+                console.log(
+                  "[ChatInterface] Reloading session:",
+                  currentSessionId
+                );
+                loadSessionMessages(currentSessionId);
+              }, 2000);
+            } else if (reloadCount >= maxReloads) {
+              console.warn(
+                "[ChatInterface] Maximum reload attempts reached, stopping automatic reloads",
+                { reloadCount, maxReloads }
+              );
+
+              // Set a timeout to reset the reload count after 30 seconds
+              if (!errorLoopTimeout) {
+                const timeout = setTimeout(() => {
+                  console.log(
+                    "[ChatInterface] Resetting reload count after timeout"
+                  );
+                  setReloadCount(0);
+                  setErrorLoopTimeout(null);
+                }, 30000);
+                setErrorLoopTimeout(timeout);
+              }
+            } else {
+              console.log(
+                "[ChatInterface] Error detected but recent reload within 10s, skipping reload",
+                { timeSinceLastReload }
+              );
+            }
+          } else {
+            console.log(
+              "[ChatInterface] Error detected but recent assistant message or tool calls found, skipping reload",
+              { isNetworkError, isDuplicateError, errorMessage }
+            );
+          }
+        } else if (shouldCircuitBreak) {
+          console.log(
+            "[ChatInterface] Circuit breaker active - not attempting reload",
+            { consecutiveEmptyErrors, maxConsecutiveEmptyErrors }
+          );
+        } else if (shouldImmediateCircuitBreak) {
+          console.log(
+            "[ChatInterface] Immediate circuit breaker active - not attempting reload",
+            { consecutiveEmptyErrors, hasRecentEmptyErrors }
+          );
+        } else {
+          console.log(
+            "[ChatInterface] Error detected but conditions not met for reload",
+            {
+              currentSessionId: !!currentSessionId,
+              isNetworkError,
+              isDuplicateError,
+              isEmptyError,
+              isConnectionError,
+              status,
+              shouldCircuitBreak,
+              shouldImmediateCircuitBreak,
+              suppressEmptyErrors,
+            }
+          );
+        }
+      } catch (errorHandlingError) {
+        console.error(
+          "[ChatInterface] Error in error handling:",
+          errorHandlingError
+        );
+        // If error handling itself fails, just return to prevent infinite loops
+        return;
+      }
+    },
   });
 
+  // Separate useEffect for streaming timeout
   useEffect(() => {
+    if (status === "streaming" && currentSessionId) {
+      const lastMessage = messages[messages.length - 1];
+      const hasRecentAssistantMessage =
+        lastMessage?.role === "assistant" &&
+        lastMessage?.parts &&
+        lastMessage.parts.length > 0;
+
+      // Check if there are any tool calls in progress or recently completed
+      const hasToolCallsInProgress = lastMessage?.parts?.some(
+        (part: any) =>
+          part.type?.startsWith("tool-") &&
+          (part.state === "input-streaming" ||
+            part.state === "input-available" ||
+            part.state === "output-available")
+      );
+
+      if (!hasRecentAssistantMessage && !hasToolCallsInProgress) {
+        const now = Date.now();
+        const timeSinceLastReload = now - lastReloadTimeRef.current;
+
+        // Prevent reloading if we've reloaded within the last 10 seconds
+        if (timeSinceLastReload > 10000) {
+          const timeout = setTimeout(() => {
+            console.log(
+              "[ChatInterface] Streaming timeout, checking for saved message"
+            );
+            lastReloadTimeRef.current = Date.now();
+            loadSessionMessages(currentSessionId);
+          }, 30000); // 30 seconds timeout
+
+          return () => clearTimeout(timeout);
+        } else {
+          console.log(
+            "[ChatInterface] Streaming timeout but recent reload within 10s, skipping timeout check",
+            { timeSinceLastReload }
+          );
+        }
+      } else {
+        console.log(
+          "[ChatInterface] Streaming but recent assistant message found, skipping timeout check"
+        );
+      }
+    }
+  }, [status, currentSessionId, messages.length]);
+
+  // Separate useEffect for error handling
+  useEffect(() => {
+    if (status === "error" && currentSessionId && messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      const hasRecentAssistantMessage =
+        lastMessage?.role === "assistant" &&
+        lastMessage?.parts &&
+        lastMessage.parts.length > 0;
+
+      // Check if there are any tool calls in progress or recently completed
+      const hasToolCallsInProgress = lastMessage?.parts?.some(
+        (part: any) =>
+          part.type?.startsWith("tool-") &&
+          (part.state === "input-streaming" ||
+            part.state === "input-available" ||
+            part.state === "output-available")
+      );
+
+      if (!hasRecentAssistantMessage && !hasToolCallsInProgress) {
+        const now = Date.now();
+        const timeSinceLastReload = now - lastReloadTimeRef.current;
+
+        // Prevent reloading if we've reloaded within the last 10 seconds
+        if (timeSinceLastReload > 10000) {
+          console.log(
+            "[ChatInterface] Error status detected, reloading session to get saved messages"
+          );
+          lastReloadTimeRef.current = now;
+          setTimeout(() => {
+            loadSessionMessages(currentSessionId);
+          }, 1000);
+        } else {
+          console.log(
+            "[ChatInterface] Error status detected but recent reload within 10s, skipping reload",
+            { timeSinceLastReload }
+          );
+        }
+      } else {
+        console.log(
+          "[ChatInterface] Error status but recent assistant message found, skipping reload"
+        );
+      }
+    }
+  }, [status, currentSessionId, messages.length]);
+
+  // Separate useEffect for message logging and context management
+  useEffect(() => {
+    console.log("[ChatInterface] Messages state updated:", {
+      messageCount: messages.length,
+      status,
+      lastMessage: messages[messages.length - 1],
+      allMessageIds: messages.map((m) => m.id),
+      lastMessageParts: messages[messages.length - 1]?.parts?.length,
+      lastMessageRole: messages[messages.length - 1]?.role,
+    });
+
+    // Log tool calls in the last message
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage?.parts) {
+      const toolCalls = lastMessage.parts.filter((part) =>
+        part.type?.startsWith("tool-")
+      );
+      if (toolCalls.length > 0) {
+        console.log("[ChatInterface] Tool calls in last message:", {
+          messageId: lastMessage.id,
+          toolCallCount: toolCalls.length,
+          toolCalls: toolCalls.map((tc) => ({
+            type: tc.type,
+            state: (tc as any).state,
+            callId: (tc as any).toolCallId,
+            hasInput: !!(tc as any).input,
+            hasOutput: !!(tc as any).output,
+          })),
+        });
+      }
+    }
+
     const prevIds = messageIdsRef.current;
     const currentIds = messages.map((msg) => msg.id);
     const newUserMessage = [...messages]
@@ -2671,6 +3264,75 @@ export function ChatInterface({
     messageIdsRef.current = currentIds;
   }, [messages]);
 
+  // Track when a final answer is produced
+  useEffect(() => {
+    if (status === "ready" && messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage?.role === "assistant" && lastMessage?.parts) {
+        const textParts = lastMessage.parts.filter(
+          (part) => part.type === "text"
+        );
+        const reasoningParts = lastMessage.parts.filter(
+          (part) => part.type === "reasoning"
+        );
+
+        // Check if we have a complete final answer
+        const hasFinalAnswer =
+          textParts.length > 0 &&
+          textParts.some((part) => part.text && part.text.length > 50); // Substantial text content
+
+        console.log("[ChatInterface] Checking for final answer:", {
+          hasTextParts: textParts.length > 0,
+          hasReasoningParts: reasoningParts.length > 0,
+          textContentLength: textParts[0]?.text?.length || 0,
+          hasFinalAnswer,
+          partsCount: lastMessage.parts.length,
+        });
+
+        if (hasFinalAnswer && !finalAnswerProduced) {
+          console.log("[ChatInterface] Final answer detected and produced!");
+          setFinalAnswerProduced(true);
+        }
+      }
+    }
+  }, [status, messages.length, finalAnswerProduced]);
+
+  // Additional useEffect to handle message completion detection
+  useEffect(() => {
+    if (messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage?.role === "assistant" && lastMessage?.parts) {
+        const textParts = lastMessage.parts.filter(
+          (part) => part.type === "text"
+        );
+        const reasoningParts = lastMessage.parts.filter(
+          (part) => part.type === "reasoning"
+        );
+
+        // Check if we have both reasoning and text parts (indicating completion)
+        if (reasoningParts.length > 0 && textParts.length > 0) {
+          const lastReasoningPart = reasoningParts[reasoningParts.length - 1];
+          const lastTextPart = textParts[textParts.length - 1];
+
+          console.log("[ChatInterface] Message completion detected:", {
+            reasoningState: (lastReasoningPart as any)?.state,
+            textState: (lastTextPart as any)?.state,
+            textLength: lastTextPart?.text?.length,
+            reasoningLength: lastReasoningPart?.text?.length,
+          });
+
+          // If we have completed text, ensure it's rendered
+          if (lastTextPart?.text && (lastTextPart as any)?.state === "done") {
+            console.log(
+              "[ChatInterface] Final text is ready, ensuring UI update"
+            );
+            // Final answer is ready - no additional action needed
+          }
+        }
+      }
+    }
+  }, [messages, status]);
+
   useEffect(() => {
     if (messages.length === 0) {
       setContextResourceMap((prev) => {
@@ -2682,6 +3344,44 @@ export function ChatInterface({
       messageIdsRef.current = [];
     }
   }, [messages.length]);
+
+  // Reset final answer tracking when starting a new conversation
+  useEffect(() => {
+    if (messages.length === 0) {
+      setFinalAnswerProduced(false);
+      setEmptyErrorCount(0);
+      setSuppressEmptyErrors(false);
+    }
+  }, [messages.length]);
+
+  // Track when a final answer is produced
+  useEffect(() => {
+    if (status === "ready" && messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage?.role === "assistant" && lastMessage?.parts) {
+        const textParts = lastMessage.parts.filter(
+          (part) => part.type === "text"
+        );
+
+        // Check if we have a complete final answer
+        const hasFinalAnswer =
+          textParts.length > 0 &&
+          textParts.some((part) => part.text && part.text.length > 50); // Substantial text content
+
+        console.log("[ChatInterface] Checking for final answer:", {
+          hasTextParts: textParts.length > 0,
+          textContentLength: textParts[0]?.text?.length || 0,
+          hasFinalAnswer,
+          finalAnswerProduced,
+        });
+
+        if (hasFinalAnswer && !finalAnswerProduced) {
+          console.log("[ChatInterface] Final answer detected and produced!");
+          setFinalAnswerProduced(true);
+        }
+      }
+    }
+  }, [status, messages.length, finalAnswerProduced]);
 
   // Session loading function - defined after useChat to access setMessages
   const loadSessionMessages = useCallback(
@@ -2818,6 +3518,25 @@ export function ChatInterface({
       return;
     }
 
+    // Reset reload count when starting a new session
+    setReloadCount(0);
+
+    // Reset circuit breaker when starting a new session
+    setConsecutiveEmptyErrors(0);
+    setSuppressEmptyErrors(false);
+
+    // Clear any existing error loop timeout
+    if (errorLoopTimeout) {
+      clearTimeout(errorLoopTimeout);
+      setErrorLoopTimeout(null);
+    }
+
+    // Clear any existing circuit breaker timeout
+    if (circuitBreakerTimeout) {
+      clearTimeout(circuitBreakerTimeout);
+      setCircuitBreakerTimeout(null);
+    }
+
     if (sessionId !== currentSessionId) {
       console.log("[Chat Interface] Loading session:", sessionId);
       loadSessionMessages(sessionId);
@@ -2847,6 +3566,23 @@ export function ChatInterface({
 
   useEffect(() => {
     console.log("Messages updated:", messages);
+  }, [messages]);
+
+  // Force chart re-render when chart data is available
+  useEffect(() => {
+    const hasChartData = messages.some((message) =>
+      message.parts?.some(
+        (part: any) =>
+          part.type === "tool-createChart" &&
+          part.state === "output-available" &&
+          part.output
+      )
+    );
+
+    if (hasChartData) {
+      console.log(`[Chart Rendering] Chart data detected, forcing re-render`);
+      setChartRenderKey((prev) => prev + 1);
+    }
   }, [messages]);
 
   // Check rate limit status
@@ -2903,13 +3639,13 @@ export function ChatInterface({
         }
       }
     }
-  }, [error]); // Remove onRateLimitError from dependencies to prevent infinite loops
+  }, [error, onRateLimitError]);
 
   // Notify parent component about message state changes
   useEffect(() => {
     console.log("[Chat Interface] Messages changed, count:", messages.length);
     onMessagesChange?.(messages.length > 0);
-  }, [messages.length]); // Remove onMessagesChange from dependencies to prevent infinite loops
+  }, [messages.length, onMessagesChange]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -3382,6 +4118,18 @@ export function ChatInterface({
     });
   };
 
+  const toggleFredResultExpansion = (resultId: string) => {
+    setExpandedFredResults((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(resultId)) {
+        newSet.delete(resultId);
+      } else {
+        newSet.add(resultId);
+      }
+      return newSet;
+    });
+  };
+
   const toggleChartExpansion = (toolId: string) => {
     setExpandedTools((prev) => {
       const newSet = new Set(prev);
@@ -3454,7 +4202,7 @@ export function ChatInterface({
     (status === "ready" || status === "error") && messages.length > 0;
 
   return (
-    <>
+    <ChatErrorBoundary>
       <SavedResultsProvider>
         <SeenResultsProvider sessionKey={sessionIdRef.current}>
           <div className="w-full max-w-3xl mx-auto relative min-h-0">
@@ -3528,7 +4276,7 @@ export function ChatInterface({
                         <motion.button
                           onClick={() =>
                             handlePromptClick(
-                              "Search for the latest news about artificial intelligence developments, machine learning breakthroughs, and tech industry updates from the past month."
+                              "Assess whether increases in federal R&D and infrastructure spending (USAspending categories) correlate with private investment (FRED) over medium horizons. Estimate sign and magnitude of crowding effects."
                             )
                           }
                           className="bg-gray-50 dark:bg-gray-800/50 p-2.5 sm:p-4 rounded-xl border border-gray-100 dark:border-gray-700 hover:border-gray-200 dark:hover:border-gray-600 transition-colors hover:bg-gray-100 dark:hover:bg-gray-800 text-left group"
@@ -3538,17 +4286,18 @@ export function ChatInterface({
                           whileTap={{ scale: 0.98 }}
                         >
                           <div className="text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2 text-xs sm:text-sm font-medium group-hover:text-gray-900 dark:group-hover:text-gray-100">
-                            💻 Tech & AI
+                            💸 Fiscal crowding-in vs crowding-out
                           </div>
                           <div className="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400">
-                            Latest AI news and tech developments
+                            Uses official US data for reliable, reproducible
+                            analysis.
                           </div>
                         </motion.button>
 
                         <motion.button
                           onClick={() =>
                             handlePromptClick(
-                              "Aggregate press releases on carbon pricing policies in 2025 from G20 countries. Build a table by country with announced carbon price levels, exemptions, and start dates. Add a short risk assessment."
+                              "Retrieve GDP per capita (constant PPP) for USA, GBR, IND from 1990–2024. Plot and describe long-run convergence/divergence. Provide indicator codes and country codes."
                             )
                           }
                           className="bg-gray-50 dark:bg-gray-800/50 p-2.5 sm:p-4 rounded-xl border border-gray-100 dark:border-gray-700 hover:border-gray-200 dark:hover:border-gray-600 transition-colors hover:bg-gray-100 dark:hover:bg-gray-800 text-left group"
@@ -3558,17 +4307,18 @@ export function ChatInterface({
                           whileTap={{ scale: 0.98 }}
                         >
                           <div className="text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2 text-xs sm:text-sm font-medium group-hover:text-gray-900 dark:group-hover:text-gray-100">
-                            🌎 Policy & Society
+                            🌎 Cross-country comparability
                           </div>
                           <div className="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400">
-                            Press releases, assessments, and comparisons
+                            Analyze official press releases for robust
+                            international benchmarking.
                           </div>
                         </motion.button>
 
                         <motion.button
                           onClick={() =>
                             handlePromptClick(
-                              "List all London exhibitions (Sept–Oct 2025) involving AI-generated art. Extract curator quotes, thematic descriptions, and visitor attendance numbers. Provide an analysis of public reception trends."
+                              "Estimate the output gap by comparing actual real GDP (FRED) to potential GDP (CBO series via FRED). Relate output gap to unemployment deviations from NAIRU (FRED/BLS). Test Phillips curve stability pre/post-pandemic."
                             )
                           }
                           className="bg-gray-50 dark:bg-gray-800/50 p-2.5 sm:p-4 rounded-xl border border-gray-100 dark:border-gray-700 hover:border-gray-200 dark:hover:border-gray-600 transition-colors hover:bg-gray-100 dark:hover:bg-gray-800 text-left group"
@@ -3578,17 +4328,18 @@ export function ChatInterface({
                           whileTap={{ scale: 0.98 }}
                         >
                           <div className="text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2 text-xs sm:text-sm font-medium group-hover:text-gray-900 dark:group-hover:text-gray-100">
-                            🎨 Culture & Media
+                            🔍 Output gap and cyclical risk
                           </div>
                           <div className="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400">
-                            Cultural, arts, media and trend analysis
+                            Assess output gap and cyclical risk using official
+                            FRED and BLS data.
                           </div>
                         </motion.button>
 
                         <motion.button
                           onClick={() =>
                             handlePromptClick(
-                              "Analyze Moderna's competitive position in the mRNA therapeutics market. Review their latest SEC filings, drug pipeline, ongoing clinical trials, and stock performance. Compare with BioNTech and CureVac. Include patent landscape analysis."
+                              "Retrieve CPI-U headline and CPI-U less food & energy. Compute YoY and MoM (seasonally adjusted) for both. State whether each series is SA or NSA."
                             )
                           }
                           className="bg-gray-50 dark:bg-gray-800/50 p-2.5 sm:p-4 rounded-xl border border-gray-100 dark:border-gray-700 hover:border-gray-200 dark:hover:border-gray-600 transition-colors hover:bg-gray-100 dark:hover:bg-gray-800 text-left group"
@@ -3598,17 +4349,18 @@ export function ChatInterface({
                           whileTap={{ scale: 0.98 }}
                         >
                           <div className="text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2 text-xs sm:text-sm font-medium group-hover:text-gray-900 dark:group-hover:text-gray-100">
-                            💼 Pharma Analysis
+                            🧮 CPI Headline vs. Core
                           </div>
                           <div className="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400">
-                            Company pipelines & competitive intelligence
+                            Compare headline and core inflation, and clarify
+                            seasonal adjustment.
                           </div>
                         </motion.button>
 
                         <motion.button
                           onClick={() =>
                             handlePromptClick(
-                              "Aggregate player performance stats from the 2025 UEFA Champions League quarterfinals. Rank the top 10 players by expected goals vs. actual goals, and highlight the biggest overperformers/underperformers."
+                              "Report exports of goods and services (% of GDP) for VNM vs. USA over 30 years. Discuss structural differences evident in the data."
                             )
                           }
                           className="bg-gray-50 dark:bg-gray-800/50 p-2.5 sm:p-4 rounded-xl border border-gray-100 dark:border-gray-700 hover:border-gray-200 dark:hover:border-gray-600 transition-colors hover:bg-gray-100 dark:hover:bg-gray-800 text-left group"
@@ -3618,17 +4370,18 @@ export function ChatInterface({
                           whileTap={{ scale: 0.98 }}
                         >
                           <div className="text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2 text-xs sm:text-sm font-medium group-hover:text-gray-900 dark:group-hover:text-gray-100">
-                            🏅 Sports & Events
+                            📦 Trade and exposure
                           </div>
                           <div className="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400">
-                            Latest games, players, and performance stats
+                            Compare trade and exposure indicators across
+                            countries.
                           </div>
                         </motion.button>
 
                         <motion.button
                           onClick={() =>
                             handlePromptClick(
-                              "Retrieve 2025 global policy documents on AI in education. Compare the regulatory approaches of US, EU, and Singapore, focusing on student data privacy."
+                              "Explain why the unemployment rate (BLS/CPS) can fall while payroll employment (BLS/CES) also falls. Support with latest data."
                             )
                           }
                           className="bg-gradient-to-r from-blue-50 to-purple-50 dark:from-blue-900/20 dark:to-purple-900/20 p-2.5 sm:p-4 rounded-xl border border-blue-200 dark:border-blue-700 hover:border-blue-300 dark:hover:border-blue-600 transition-colors hover:from-blue-100 hover:to-purple-100 dark:hover:from-blue-900/30 dark:hover:to-purple-900/30 text-left group col-span-1 sm:col-span-2 lg:col-span-1"
@@ -3638,10 +4391,10 @@ export function ChatInterface({
                           whileTap={{ scale: 0.98 }}
                         >
                           <div className="text-blue-700 dark:text-blue-300 mb-1.5 sm:mb-2 text-xs sm:text-sm font-medium group-hover:text-blue-900 dark:group-hover:text-blue-100">
-                            🎓 Education & Research
+                            🔄 Economic performance
                           </div>
                           <div className="text-[10px] sm:text-xs text-blue-600 dark:text-blue-400">
-                            Policy documents, regulations, and research
+                            Get latest economic performance indicators.
                           </div>
                         </motion.button>
                       </div>
@@ -3651,25 +4404,48 @@ export function ChatInterface({
                           <div className="flex items-center gap-2">
                             <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
                             <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
-                              Live News
+                              Live Economic News
                             </h3>
                             <span className="text-xs text-gray-500 dark:text-gray-400">
-                              Powered by Valyu
+                              from
                             </span>
+                            <div className="ml-0">
+                              <Select
+                                value={selectedCountry}
+                                onValueChange={setSelectedCountry}
+                              >
+                                <SelectTrigger className="w-30 h-6 text-xs border-transparent shadow-none focus:ring-0 focus:border-transparent bg-transparent transition-shadow hover:shadow-[0_0_0_2px_rgba(168,85,247,0.5)] dark:hover:shadow-[0_0_0_2px_rgba(192,132,252,0.5)]">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {countries.map((country) => (
+                                    <SelectItem
+                                      key={country.value}
+                                      value={country.value}
+                                    >
+                                      {country.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
                           </div>
                           <button
                             onClick={() => {
                               handlePromptClick(
-                                "Search for the latest news on bio and pharmeceutical research"
+                                `Search for the latest economic news in ${
+                                  countries.find(
+                                    (c) => c.value === selectedCountry
+                                  )?.label || selectedCountry
+                                }`
                               );
-        
                             }}
                             className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 hover:underline dark:hover:text-blue-300 transition-colors cursor-pointer"
                           >
                             more
                           </button>
                         </div>
-                        <NewsCarousel />
+                        <NewsCarousel country={selectedCountry} />
                       </div>
                     </div>
                   </div>
@@ -3914,7 +4690,7 @@ export function ChatInterface({
 
                   return (
                     <motion.div
-                      key={message.id}
+                      key={`${message.id}-${finalAnswerProduced}`}
                       data-message-id={message.id}
                       className="group"
                       initial={
@@ -4168,11 +4944,45 @@ export function ChatInterface({
                                 const groupedParts: any[] = [];
                                 let currentReasoningGroup: any[] = [];
 
+                                console.log(
+                                  "[Part Rendering] Processing message parts:",
+                                  {
+                                    messageId: message.id,
+                                    partCount: message.parts.length,
+                                    parts: message.parts.map((p, i) => ({
+                                      index: i,
+                                      type: p.type,
+                                      hasText: !!(p as any).text,
+                                      hasToolCallId: !!(p as any).toolCallId,
+                                      state: (p as any).state,
+                                      hasInput: !!(p as any).input,
+                                      hasOutput: !!(p as any).output,
+                                    })),
+                                  }
+                                );
+
                                 message.parts.forEach((part, index) => {
+                                  console.log(
+                                    "[Part Rendering] Processing part:",
+                                    {
+                                      messageId: message.id,
+                                      partIndex: index,
+                                      partType: part.type,
+                                      partState: (part as any).state,
+                                      hasToolCallId: !!(part as any).toolCallId,
+                                      toolCallId: (part as any).toolCallId,
+                                      hasInput: !!(part as any).input,
+                                      hasOutput: !!(part as any).output,
+                                      outputType: typeof (part as any).output,
+                                      outputLength:
+                                        (part as any).output?.length || 0,
+                                    }
+                                  );
+
                                   if (
                                     part.type === "reasoning" &&
-                                    part.text &&
-                                    part.text.trim() !== ""
+                                    (part as any).text &&
+                                    (part as any).text.trim() !== ""
                                   ) {
                                     currentReasoningGroup.push({ part, index });
                                   } else {
@@ -4199,7 +5009,36 @@ export function ChatInterface({
                                   });
                                 }
 
+                                console.log(
+                                  "[Part Rendering] Rendering grouped parts:",
+                                  {
+                                    messageId: message.id,
+                                    groupCount: groupedParts.length,
+                                    groups: groupedParts.map((g, i) => ({
+                                      index: i,
+                                      type: g.type,
+                                      partType: g.part?.type,
+                                      partState: g.part?.state,
+                                      hasToolCallId: !!g.part?.toolCallId,
+                                      toolCallId: g.part?.toolCallId,
+                                    })),
+                                  }
+                                );
+
                                 return groupedParts.map((group, groupIndex) => {
+                                  console.log(
+                                    "[Part Rendering] Rendering group:",
+                                    {
+                                      messageId: message.id,
+                                      groupIndex,
+                                      groupType: group.type,
+                                      partType: group.part?.type,
+                                      partState: group.part?.state,
+                                      hasToolCallId: !!group.part?.toolCallId,
+                                      toolCallId: group.part?.toolCallId,
+                                    }
+                                  );
+
                                   if (group.type === "reasoning-group") {
                                     // Render combined reasoning component
                                     const combinedText = group.parts
@@ -4234,13 +5073,35 @@ export function ChatInterface({
                                     // Render single part normally
                                     const { part, index } = group;
 
+                                    console.log(
+                                      "[Part Rendering] Processing part in switch:",
+                                      {
+                                        messageId: message.id,
+                                        partIndex: index,
+                                        partType: part.type,
+                                        partState: (part as any).state,
+                                        hasToolCallId: !!(part as any)
+                                          .toolCallId,
+                                        toolCallId: (part as any).toolCallId,
+                                        hasInput: !!(part as any).input,
+                                        hasOutput: !!(part as any).output,
+                                        outputType: typeof (part as any).output,
+                                        outputLength:
+                                          (part as any).output?.length || 0,
+                                      }
+                                    );
+
                                     switch (part.type) {
                                       // Text parts
                                       case "text":
                                         return (
                                           <div
-                                            key={index}
-                                            className="prose prose-sm max-w-none dark:prose-invert"
+                                            key={`text-${index}-${finalAnswerProduced}`}
+                                            className={`prose prose-sm max-w-none dark:prose-invert ${
+                                              finalAnswerProduced
+                                                ? "final-answer-ready"
+                                                : ""
+                                            }`}
                                           >
                                             {(() => {
                                               // Collect citations from tool results that appear BEFORE this text part
@@ -4267,12 +5128,6 @@ export function ChatInterface({
                                                   (p.type ===
                                                     "tool-webSearch" ||
                                                     p.type ===
-                                                      "tool-readTextFromUrl" ||
-                                                    p.type ===
-                                                      "tool-parsePdfFromUrl" ||
-                                                    p.type ===
-                                                      "tool-parseDocxFromUrl" ||
-                                                    p.type ===
                                                       "tool-createChart" ||
                                                     p.type ===
                                                       "tool-codeExecution") &&
@@ -4281,6 +5136,14 @@ export function ChatInterface({
                                                   p.output
                                                 ) {
                                                   try {
+                                                    // Skip JSON parsing for codeExecution tool as it returns formatted text
+                                                    if (
+                                                      p.type ===
+                                                      "tool-codeExecution"
+                                                    ) {
+                                                      return; // Skip citation extraction for code execution
+                                                    }
+
                                                     const output =
                                                       typeof p.output ===
                                                       "string"
@@ -4341,18 +5204,10 @@ export function ChatInterface({
                                                                 "tool-webSearch"
                                                                   ? "web"
                                                                   : p.type ===
-                                                                    "tool-readTextFromUrl"
-                                                                  ? "web"
-                                                                  : p.type ===
-                                                                    "tool-parsePdfFromUrl"
-                                                                  ? "web"
-                                                                  : p.type ===
-                                                                    "tool-parseDocxFromUrl"
-                                                                  ? "web"
-                                                                  : p.type ===
                                                                     "tool-createChart"
                                                                   ? "web"
-                                                                  : p.type ===
+                                                                  : (p as any)
+                                                                      .type ===
                                                                     "tool-codeExecution"
                                                                   ? "web"
                                                                   : "web",
@@ -4405,6 +5260,20 @@ export function ChatInterface({
                                                   />
                                                 );
                                               } else {
+                                                console.log(
+                                                  "[ChatInterface] Rendering text part:",
+                                                  {
+                                                    textLength:
+                                                      part.text?.length,
+                                                    textPreview:
+                                                      part.text?.substring(
+                                                        0,
+                                                        100
+                                                      ),
+                                                    partType: part.type,
+                                                    messageId: message.id,
+                                                  }
+                                                );
                                                 return (
                                                   <MemoizedMarkdown
                                                     text={part.text}
@@ -4600,8 +5469,16 @@ export function ChatInterface({
                                               </div>
                                             );
                                           case "output-available":
+                                            console.log(
+                                              "[Tool Output] Web search output:",
+                                              part.output
+                                            );
                                             const webResults =
                                               extractSearchResults(part.output);
+                                            console.log(
+                                              "[Tool Output] Extracted web results:",
+                                              webResults
+                                            );
                                             return (
                                               <div
                                                 key={callId}
@@ -4611,7 +5488,7 @@ export function ChatInterface({
                                                   <div className="flex items-center gap-2 text-blue-700 dark:text-blue-400">
                                                     <CheckCircle className="h-4 w-4" />
                                                     <span className="font-medium">
-                                                      Valyu Search Results
+                                                      Web Search Results
                                                     </span>
                                                     <span className="text-xs text-blue-600 dark:text-blue-300">
                                                       ({webResults.length}{" "}
@@ -4722,6 +5599,73 @@ export function ChatInterface({
                                               !expandedTools.has(
                                                 `collapsed-${callId}`
                                               );
+
+                                            // Add comprehensive logging for chart rendering
+                                            console.log(
+                                              `[Chart Rendering] Tool call ID: ${callId}`
+                                            );
+                                            console.log(
+                                              `[Chart Rendering] Chart expanded: ${isChartExpanded}`
+                                            );
+                                            console.log(
+                                              `[Chart Rendering] Chart output:`,
+                                              part.output
+                                            );
+                                            console.log(
+                                              `[Chart Rendering] Chart data series count:`,
+                                              part.output?.dataSeries?.length
+                                            );
+
+                                            // Validate chart data before rendering
+                                            if (!part.output) {
+                                              console.error(
+                                                `[Chart Rendering] No output data for chart ${callId}`
+                                              );
+                                              return (
+                                                <div
+                                                  key={callId}
+                                                  className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 sm:p-3"
+                                                >
+                                                  <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
+                                                    <AlertCircle className="h-4 w-4" />
+                                                    <span className="font-medium">
+                                                      Chart Rendering Error
+                                                    </span>
+                                                  </div>
+                                                  <div className="text-sm text-red-600 dark:text-red-300">
+                                                    No chart data available
+                                                  </div>
+                                                </div>
+                                              );
+                                            }
+
+                                            if (
+                                              !part.output.dataSeries ||
+                                              part.output.dataSeries.length ===
+                                                0
+                                            ) {
+                                              console.error(
+                                                `[Chart Rendering] No data series for chart ${callId}`
+                                              );
+                                              return (
+                                                <div
+                                                  key={callId}
+                                                  className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 sm:p-3"
+                                                >
+                                                  <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
+                                                    <AlertCircle className="h-4 w-4" />
+                                                    <span className="font-medium">
+                                                      Chart Data Error
+                                                    </span>
+                                                  </div>
+                                                  <div className="text-sm text-red-600 dark:text-red-300">
+                                                    No data series available for
+                                                    chart
+                                                  </div>
+                                                </div>
+                                              );
+                                            }
+
                                             return (
                                               <div
                                                 key={callId}
@@ -4741,9 +5685,27 @@ export function ChatInterface({
                                                     >
                                                       <ChevronUp className="h-4 w-4" />
                                                     </Button>
-                                                    <FinancialChart
-                                                      {...part.output}
-                                                    />
+                                                    <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded p-2 mb-2">
+                                                      <div className="flex items-center gap-2 text-green-700 dark:text-green-400 text-sm">
+                                                        <CheckCircle className="h-4 w-4" />
+                                                        <span className="font-medium">
+                                                          Chart Rendered
+                                                          Successfully
+                                                        </span>
+                                                      </div>
+                                                    </div>
+                                                    <div
+                                                      className="chart-container"
+                                                      key={`chart-${callId}-${chartRenderKey}`}
+                                                    >
+                                                      <ChartErrorBoundary
+                                                        callId={callId}
+                                                      >
+                                                        <FinancialChart
+                                                          {...part.output}
+                                                        />
+                                                      </ChartErrorBoundary>
+                                                    </div>
                                                   </div>
                                                 ) : (
                                                   <div className="bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 rounded-xl p-4">
@@ -4825,6 +5787,1256 @@ export function ChatInterface({
                                         }
                                         break;
                                       }
+                                      // Economics Search Tool
+                                      case "tool-economicsSearch": {
+                                        const callId = part.toolCallId;
+                                        switch (part.state) {
+                                          case "input-streaming":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-purple-700 dark:text-purple-400 mb-2">
+                                                  <span className="text-lg">
+                                                    📊
+                                                  </span>
+                                                  <span className="font-medium">
+                                                    Searching Economics Data
+                                                  </span>
+                                                  <Clock className="h-3 w-3 animate-spin" />
+                                                </div>
+                                                <div className="text-sm text-purple-600 dark:text-purple-300">
+                                                  Searching economics
+                                                  databases...
+                                                </div>
+                                              </div>
+                                            );
+                                          case "input-available":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-purple-700 dark:text-purple-400 mb-2">
+                                                  <span className="text-lg">
+                                                    📊
+                                                  </span>
+                                                  <span className="font-medium">
+                                                    Searching Economics Data
+                                                  </span>
+                                                  <Clock className="h-3 w-3 animate-spin" />
+                                                </div>
+                                                <div className="text-sm text-purple-600 dark:text-purple-300">
+                                                  <div className="bg-purple-100 dark:bg-purple-800/30 p-2 rounded">
+                                                    <div className="text-xs">
+                                                      Query: &quot;
+                                                      {part.input.query}&quot;
+                                                    </div>
+                                                  </div>
+                                                  <div className="mt-2 text-xs">
+                                                    Searching economics
+                                                    databases...
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            );
+                                          case "output-available":
+                                            console.log(
+                                              "[Tool Output] Economics search output:",
+                                              part.output
+                                            );
+                                            const economicsResults =
+                                              extractSearchResults(part.output);
+                                            console.log(
+                                              "[Tool Output] Extracted economics results:",
+                                              economicsResults
+                                            );
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg p-3 sm:p-4"
+                                              >
+                                                <div className="flex items-center justify-between gap-3 mb-4">
+                                                  <div className="flex items-center gap-2 text-purple-700 dark:text-purple-400">
+                                                    <CheckCircle className="h-4 w-4" />
+                                                    <span className="font-medium">
+                                                      Economics Search Results
+                                                    </span>
+                                                    <span className="text-xs text-purple-600 dark:text-purple-300">
+                                                      ({economicsResults.length}{" "}
+                                                      results)
+                                                    </span>
+                                                  </div>
+                                                </div>
+                                                {economicsResults.length > 0 ? (
+                                                  <SearchResultsCarousel
+                                                    results={economicsResults}
+                                                    type="web"
+                                                    messageId={message.id}
+                                                    toolName="economicsSearch"
+                                                  />
+                                                ) : (
+                                                  <div className="text-sm text-purple-600 dark:text-purple-300">
+                                                    No economics data found for
+                                                    this query.
+                                                  </div>
+                                                )}
+                                              </div>
+                                            );
+                                          case "error":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
+                                                  <XCircle className="h-4 w-4" />
+                                                  <span className="font-medium">
+                                                    Economics Search Failed
+                                                  </span>
+                                                </div>
+                                                <div className="text-sm text-red-600 dark:text-red-300">
+                                                  {part.errorText}
+                                                </div>
+                                              </div>
+                                            );
+                                        }
+                                        break;
+                                      }
+                                      // FRED Search Tool
+                                      case "tool-FREDSearch": {
+                                        const callId = part.toolCallId;
+                                        switch (part.state) {
+                                          case "input-streaming":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
+                                                  <span className="text-lg">
+                                                    📈
+                                                  </span>
+                                                  <span className="font-medium">
+                                                    Searching FRED Database
+                                                  </span>
+                                                  <Clock className="h-3 w-3 animate-spin" />
+                                                </div>
+                                                <div className="text-sm text-red-600 dark:text-red-300">
+                                                  Searching FRED database...
+                                                </div>
+                                              </div>
+                                            );
+                                          case "input-available":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
+                                                  <span className="text-lg">
+                                                    📈
+                                                  </span>
+                                                  <span className="font-medium">
+                                                    Searching FRED Database
+                                                  </span>
+                                                  <Clock className="h-3 w-3 animate-spin" />
+                                                </div>
+                                                <div className="text-sm text-red-600 dark:text-red-300">
+                                                  <div className="bg-red-100 dark:bg-red-800/30 p-2 rounded">
+                                                    <div className="text-xs">
+                                                      Query: &quot;
+                                                      {part.input.query}&quot;
+                                                    </div>
+                                                  </div>
+                                                  <div className="mt-2 text-xs">
+                                                    Searching FRED database...
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            );
+                                          case "output-available":
+                                            const fredResults =
+                                              extractSearchResults(part.output);
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 sm:p-4"
+                                              >
+                                                <div className="flex items-center justify-between gap-3 mb-4">
+                                                  <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
+                                                    <CheckCircle className="h-4 w-4" />
+                                                    <span className="font-medium">
+                                                      FRED Search Results
+                                                    </span>
+                                                    <span className="text-xs text-red-600 dark:text-red-300">
+                                                      ({fredResults.length}{" "}
+                                                      results)
+                                                    </span>
+                                                  </div>
+                                                </div>
+                                                {fredResults.length > 0 ? (
+                                                  <SearchResultsCarousel
+                                                    results={fredResults}
+                                                    type="web"
+                                                    messageId={message.id}
+                                                    toolName="FREDSearch"
+                                                  />
+                                                ) : (
+                                                  <div className="text-sm text-red-600 dark:text-red-300">
+                                                    No FRED data found for this
+                                                    query.
+                                                  </div>
+                                                )}
+                                              </div>
+                                            );
+                                          case "error":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
+                                                  <XCircle className="h-4 w-4" />
+                                                  <span className="font-medium">
+                                                    FRED Search Failed
+                                                  </span>
+                                                </div>
+                                                <div className="text-sm text-red-600 dark:text-red-300">
+                                                  {part.errorText}
+                                                </div>
+                                              </div>
+                                            );
+                                        }
+                                        break;
+                                      }
+                                      // Get FRED Series Data Tool
+                                      case "tool-getFREDSeriesData": {
+                                        const callId = part.toolCallId;
+                                        switch (part.state) {
+                                          case "input-streaming":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-blue-700 dark:text-blue-400 mb-2">
+                                                  <span className="text-lg">
+                                                    📊
+                                                  </span>
+                                                  <span className="font-medium">
+                                                    Fetching FRED Series Data
+                                                  </span>
+                                                  <Clock className="h-3 w-3 animate-spin" />
+                                                </div>
+                                                <div className="text-sm text-blue-600 dark:text-blue-300">
+                                                  Fetching time series data...
+                                                </div>
+                                              </div>
+                                            );
+                                          case "input-available":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-blue-700 dark:text-blue-400 mb-2">
+                                                  <span className="text-lg">
+                                                    📊
+                                                  </span>
+                                                  <span className="font-medium">
+                                                    Fetching FRED Series Data
+                                                  </span>
+                                                  <Clock className="h-3 w-3 animate-spin" />
+                                                </div>
+                                                <div className="text-sm text-blue-600 dark:text-blue-300">
+                                                  <div className="bg-blue-100 dark:bg-blue-800/30 p-2 rounded">
+                                                    <div className="text-xs">
+                                                      Query: &quot;
+                                                      {part.input.query}&quot;
+                                                    </div>
+                                                  </div>
+                                                  <div className="mt-2 text-xs">
+                                                    Fetching FRED time series
+                                                    data...
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            );
+                                          case "output-available":
+                                            const fredData = part.output;
+
+                                            // Parse the FRED data to handle multiple results
+                                            let parsedResults = [];
+                                            let hasResults = true;
+
+                                            try {
+                                              if (
+                                                typeof fredData === "string"
+                                              ) {
+                                                // Check if it's an error message (starts with emoji or error text)
+                                                if (
+                                                  fredData.startsWith("❌") ||
+                                                  fredData.startsWith(
+                                                    "Error"
+                                                  ) ||
+                                                  fredData.startsWith("🔐")
+                                                ) {
+                                                  hasResults = false;
+                                                  parsedResults = [];
+                                                } else {
+                                                  const parsed =
+                                                    JSON.parse(fredData);
+
+                                                  // Check if it's a "no results" response
+                                                  if (parsed.found === false) {
+                                                    hasResults = false;
+                                                    parsedResults = [];
+                                                  } else {
+                                                    // FRED tool returns a single object, not an array
+                                                    parsedResults = [parsed];
+                                                  }
+                                                }
+                                              } else if (
+                                                Array.isArray(fredData)
+                                              ) {
+                                                parsedResults = fredData;
+                                              } else {
+                                                parsedResults = [fredData];
+                                              }
+                                            } catch (error) {
+                                              // If JSON parsing fails, treat as error
+                                              hasResults = false;
+                                              parsedResults = [];
+                                            }
+
+                                            // Format results for SearchResultsCarousel
+                                            const fredResults =
+                                              parsedResults.map(
+                                                (result, index) => {
+                                                  const parsedResult =
+                                                    typeof result === "string"
+                                                      ? JSON.parse(result)
+                                                      : result;
+                                                  return {
+                                                    id: `${callId}-${index}`,
+                                                    title:
+                                                      parsedResult.title ||
+                                                      `FRED Series Data ${
+                                                        index + 1
+                                                      }`,
+                                                    content:
+                                                      parsedResult.content ||
+                                                      (typeof result ===
+                                                      "string"
+                                                        ? result
+                                                        : JSON.stringify(
+                                                            result,
+                                                            null,
+                                                            2
+                                                          )),
+                                                    fullContent:
+                                                      parsedResult.content ||
+                                                      (typeof result ===
+                                                      "string"
+                                                        ? result
+                                                        : JSON.stringify(
+                                                            result,
+                                                            null,
+                                                            2
+                                                          )),
+                                                    summary:
+                                                      parsedResult.content &&
+                                                      typeof parsedResult.content ===
+                                                        "string"
+                                                        ? parsedResult.content.substring(
+                                                            0,
+                                                            200
+                                                          ) + "..."
+                                                        : typeof result ===
+                                                          "string"
+                                                        ? result.substring(
+                                                            0,
+                                                            200
+                                                          ) + "..."
+                                                        : JSON.stringify(
+                                                            result,
+                                                            null,
+                                                            2
+                                                          ).substring(0, 200) +
+                                                          "...",
+                                                    url:
+                                                      parsedResult.url || "#",
+                                                    dataType: "fred_data",
+                                                    source:
+                                                      parsedResult.source ||
+                                                      "FRED",
+                                                    date:
+                                                      parsedResult.date ||
+                                                      new Date().toISOString(),
+                                                    isStructured: true,
+                                                    metadata: {
+                                                      seriesId:
+                                                        part.input?.seriesId ||
+                                                        "Unknown",
+                                                      toolType:
+                                                        "getFREDSeriesData",
+                                                    },
+                                                  };
+                                                }
+                                              );
+
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg p-3 sm:p-4"
+                                              >
+                                                <div className="flex items-center justify-between gap-3 mb-4">
+                                                  <div className="flex items-center gap-2 text-orange-700 dark:text-orange-400">
+                                                    <CheckCircle className="h-4 w-4" />
+                                                    <span className="font-medium">
+                                                      FRED Series Data Retrieved
+                                                    </span>
+                                                    <span className="text-xs text-orange-600 dark:text-orange-300">
+                                                      ({fredResults.length}{" "}
+                                                      results)
+                                                    </span>
+                                                  </div>
+                                                  {part.input?.query && (
+                                                    <div
+                                                      className="text-xs font-mono text-orange-700 dark:text-orange-300 bg-orange-50 dark:bg-orange-900/20 px-3 py-1 rounded border border-orange-200 dark:border-orange-700 max-w-[60%] truncate"
+                                                      title={part.input.query}
+                                                    >
+                                                      {part.input.query}
+                                                    </div>
+                                                  )}
+                                                </div>
+
+                                                {hasResults &&
+                                                fredResults.length > 0 ? (
+                                                  <SearchResultsCarousel
+                                                    results={fredResults}
+                                                    type="web"
+                                                    messageId={message.id}
+                                                    toolName="getFREDSeriesData"
+                                                  />
+                                                ) : (
+                                                  <div className="text-center py-8">
+                                                    <div className="text-orange-600 dark:text-orange-400 text-sm">
+                                                      No results retrieved
+                                                    </div>
+                                                  </div>
+                                                )}
+                                              </div>
+                                            );
+                                          case "error":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-blue-700 dark:text-blue-400 mb-2">
+                                                  <XCircle className="h-4 w-4" />
+                                                  <span className="font-medium">
+                                                    FRED Data Fetch Failed
+                                                  </span>
+                                                </div>
+                                                <div className="text-sm text-blue-600 dark:text-blue-300">
+                                                  {part.errorText}
+                                                </div>
+                                              </div>
+                                            );
+                                        }
+                                        break;
+                                      }
+                                      // Get BLS Series Data Tool
+                                      case "tool-getBLSSeriesData": {
+                                        const callId = part.toolCallId;
+                                        switch (part.state) {
+                                          case "input-streaming":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-blue-700 dark:text-blue-400 mb-2">
+                                                  <span className="text-lg">
+                                                    📊
+                                                  </span>
+                                                  <span className="font-medium">
+                                                    Fetching BLS Series Data
+                                                  </span>
+                                                  <Clock className="h-3 w-3 animate-spin" />
+                                                </div>
+                                                <div className="text-sm text-blue-600 dark:text-blue-300">
+                                                  Fetching time series data...
+                                                </div>
+                                              </div>
+                                            );
+                                          case "input-available":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-blue-700 dark:text-blue-400 mb-2">
+                                                  <span className="text-lg">
+                                                    📊
+                                                  </span>
+                                                  <span className="font-medium">
+                                                    Fetching BLS Series Data
+                                                  </span>
+                                                  <Clock className="h-3 w-3 animate-spin" />
+                                                </div>
+                                                <div className="text-sm text-blue-600 dark:text-blue-300">
+                                                  <div className="bg-blue-100 dark:bg-blue-800/30 p-2 rounded">
+                                                    <div className="text-xs">
+                                                      Query: &quot;
+                                                      {part.input.query}&quot;
+                                                    </div>
+                                                  </div>
+                                                  <div className="mt-2 text-xs">
+                                                    Fetching BLS time series
+                                                    data...
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            );
+                                          case "output-available":
+                                            const blsData = part.output;
+
+                                            // Parse the BLS data to handle multiple results
+                                            let parsedBLSResults = [];
+                                            let hasResults = true;
+
+                                            try {
+                                              if (typeof blsData === "string") {
+                                                // Check if it's an error message (starts with emoji or error text)
+                                                if (
+                                                  blsData.startsWith("❌") ||
+                                                  blsData.startsWith("Error") ||
+                                                  blsData.startsWith("🔐")
+                                                ) {
+                                                  hasResults = false;
+                                                  parsedBLSResults = [];
+                                                } else {
+                                                  const parsed =
+                                                    JSON.parse(blsData);
+
+                                                  // Check if it's a "no results" response
+                                                  if (parsed.found === false) {
+                                                    hasResults = false;
+                                                    parsedBLSResults = [];
+                                                  } else {
+                                                    // BLS tool returns a single object, not an array
+                                                    parsedBLSResults = [parsed];
+                                                  }
+                                                }
+                                              } else if (
+                                                Array.isArray(blsData)
+                                              ) {
+                                                parsedBLSResults = blsData;
+                                              } else {
+                                                parsedBLSResults = [blsData];
+                                              }
+                                            } catch (error) {
+                                              // If JSON parsing fails, treat as error
+                                              hasResults = false;
+                                              parsedBLSResults = [];
+                                            }
+
+                                            // Format results for SearchResultsCarousel
+                                            const blsResults =
+                                              parsedBLSResults.map(
+                                                (result, index) => {
+                                                  const parsedResult =
+                                                    typeof result === "string"
+                                                      ? JSON.parse(result)
+                                                      : result;
+                                                  return {
+                                                    id: `${callId}-${index}`,
+                                                    title:
+                                                      parsedResult.title ||
+                                                      `BLS Series Data ${
+                                                        index + 1
+                                                      }`,
+                                                    content:
+                                                      parsedResult.content ||
+                                                      (typeof result ===
+                                                      "string"
+                                                        ? result
+                                                        : JSON.stringify(
+                                                            result,
+                                                            null,
+                                                            2
+                                                          )),
+                                                    fullContent:
+                                                      parsedResult.content ||
+                                                      (typeof result ===
+                                                      "string"
+                                                        ? result
+                                                        : JSON.stringify(
+                                                            result,
+                                                            null,
+                                                            2
+                                                          )),
+                                                    summary:
+                                                      parsedResult.content &&
+                                                      typeof parsedResult.content ===
+                                                        "string"
+                                                        ? parsedResult.content.substring(
+                                                            0,
+                                                            200
+                                                          ) + "..."
+                                                        : typeof result ===
+                                                          "string"
+                                                        ? result.substring(
+                                                            0,
+                                                            200
+                                                          ) + "..."
+                                                        : JSON.stringify(
+                                                            result,
+                                                            null,
+                                                            2
+                                                          ).substring(0, 200) +
+                                                          "...",
+                                                    url:
+                                                      parsedResult.url || "#",
+                                                    dataType: "bls_data",
+                                                    source:
+                                                      parsedResult.source ||
+                                                      "BLS",
+                                                    date:
+                                                      parsedResult.date ||
+                                                      new Date().toISOString(),
+                                                    isStructured: true,
+                                                    metadata: {
+                                                      seriesId:
+                                                        part.input?.seriesId ||
+                                                        "Unknown",
+                                                      toolType:
+                                                        "getBLSSeriesData",
+                                                    },
+                                                  };
+                                                }
+                                              );
+
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-3 sm:p-4"
+                                              >
+                                                <div className="flex items-center justify-between gap-3 mb-4">
+                                                  <div className="flex items-center gap-2 text-blue-700 dark:text-blue-400">
+                                                    <CheckCircle className="h-4 w-4" />
+                                                    <span className="font-medium">
+                                                      BLS Series Data Retrieved
+                                                    </span>
+                                                    <span className="text-xs text-blue-600 dark:text-blue-300">
+                                                      ({blsResults.length}{" "}
+                                                      results)
+                                                    </span>
+                                                  </div>
+                                                  {part.input?.query && (
+                                                    <div
+                                                      className="text-xs font-mono text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/20 px-3 py-1 rounded border border-blue-200 dark:border-blue-700 max-w-[60%] truncate"
+                                                      title={part.input.query}
+                                                    >
+                                                      {part.input.query}
+                                                    </div>
+                                                  )}
+                                                </div>
+
+                                                {hasResults &&
+                                                blsResults.length > 0 ? (
+                                                  <SearchResultsCarousel
+                                                    results={blsResults}
+                                                    type="web"
+                                                    messageId={message.id}
+                                                    toolName="getBLSSeriesData"
+                                                  />
+                                                ) : (
+                                                  <div className="text-center py-8">
+                                                    <div className="text-blue-600 dark:text-blue-400 text-sm">
+                                                      No results retrieved
+                                                    </div>
+                                                  </div>
+                                                )}
+                                              </div>
+                                            );
+                                          case "error":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
+                                                  <XCircle className="h-4 w-4" />
+                                                  <span className="font-medium">
+                                                    BLS Data Fetch Failed
+                                                  </span>
+                                                </div>
+                                                <div className="text-sm text-red-600 dark:text-red-300">
+                                                  {part.errorText}
+                                                </div>
+                                              </div>
+                                            );
+                                        }
+                                        break;
+                                      }
+                                      // Get World Bank Details Tool
+                                      case "tool-getWBDetails": {
+                                        const callId = part.toolCallId;
+                                        console.log(
+                                          "[Tool Rendering] getWBDetails tool call:",
+                                          {
+                                            callId,
+                                            state: part.state,
+                                            hasInput: !!part.input,
+                                            hasOutput: !!part.output,
+                                            inputQuery: part.input?.query,
+                                            outputType: typeof part.output,
+                                            outputLength:
+                                              part.output?.length || 0,
+                                          }
+                                        );
+                                        switch (part.state) {
+                                          case "input-streaming":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-green-700 dark:text-green-400 mb-2">
+                                                  <span className="text-lg">
+                                                    📊
+                                                  </span>
+                                                  <span className="font-medium">
+                                                    Fetching World Bank Details
+                                                  </span>
+                                                  <Clock className="h-3 w-3 animate-spin" />
+                                                </div>
+                                                <div className="text-sm text-green-600 dark:text-green-300">
+                                                  Fetching World Bank data...
+                                                </div>
+                                              </div>
+                                            );
+                                          case "input-available":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-green-700 dark:text-green-400 mb-2">
+                                                  <span className="text-lg">
+                                                    📊
+                                                  </span>
+                                                  <span className="font-medium">
+                                                    Fetching World Bank Details
+                                                  </span>
+                                                  <Clock className="h-3 w-3 animate-spin" />
+                                                </div>
+                                                <div className="text-sm text-green-600 dark:text-green-300">
+                                                  <div className="bg-green-100 dark:bg-green-800/30 p-2 rounded">
+                                                    <div className="text-xs">
+                                                      Query: &quot;
+                                                      {part.input.query}&quot;
+                                                    </div>
+                                                  </div>
+                                                  <div className="mt-2 text-xs">
+                                                    Fetching World Bank data...
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            );
+                                          case "output-available":
+                                            const wbData = part.output;
+
+                                            console.log(
+                                              "[Tool Rendering] getWBDetails output-available:",
+                                              {
+                                                callId,
+                                                outputType: typeof wbData,
+                                                outputLength:
+                                                  wbData?.length || 0,
+                                                isString:
+                                                  typeof wbData === "string",
+                                                isArray: Array.isArray(wbData),
+                                                isObject:
+                                                  typeof wbData === "object" &&
+                                                  !Array.isArray(wbData),
+                                                rawOutput: wbData,
+                                              }
+                                            );
+
+                                            // Parse the WB data to handle multiple results
+                                            let parsedWBResults = [];
+                                            let hasResults = true;
+
+                                            try {
+                                              if (typeof wbData === "string") {
+                                                // Check if it's an error message (starts with emoji or error text)
+                                                if (
+                                                  wbData.startsWith("❌") ||
+                                                  wbData.startsWith("Error") ||
+                                                  wbData.startsWith("🔐")
+                                                ) {
+                                                  console.log(
+                                                    "[WB Debug] Error message detected"
+                                                  );
+                                                  hasResults = false;
+                                                  parsedWBResults = [];
+                                                } else {
+                                                  const parsed =
+                                                    JSON.parse(wbData);
+                                                  console.log(
+                                                    "[WB Debug] Parsed JSON:",
+                                                    parsed
+                                                  );
+
+                                                  // Check if it's a "no results" response
+                                                  if (parsed.found === false) {
+                                                    console.log(
+                                                      "[WB Debug] No results (found: false)"
+                                                    );
+                                                    hasResults = false;
+                                                    parsedWBResults = [];
+                                                  } else {
+                                                    console.log(
+                                                      "[WB Debug] Results found, wrapping in array"
+                                                    );
+                                                    // World Bank tool returns a single object, not an array
+                                                    parsedWBResults = [parsed];
+                                                  }
+                                                }
+                                              } else if (
+                                                Array.isArray(wbData)
+                                              ) {
+                                                console.log(
+                                                  "[WB Debug] Array detected"
+                                                );
+                                                parsedWBResults = wbData;
+                                              } else {
+                                                console.log(
+                                                  "[WB Debug] Object detected, wrapping in array"
+                                                );
+                                                parsedWBResults = [wbData];
+                                              }
+                                            } catch (error) {
+                                              // If JSON parsing fails, treat as error
+                                              console.log(
+                                                "[WB Debug] JSON parsing error:",
+                                                error
+                                              );
+                                              hasResults = false;
+                                              parsedWBResults = [];
+                                            }
+
+                                            console.log(
+                                              "[WB Debug] Final state:",
+                                              {
+                                                hasResults,
+                                                resultsCount:
+                                                  parsedWBResults.length,
+                                              }
+                                            );
+
+                                            // Format results for SearchResultsCarousel
+                                            const wbResults =
+                                              parsedWBResults.map(
+                                                (result, index) => {
+                                                  const parsedResult =
+                                                    typeof result === "string"
+                                                      ? JSON.parse(result)
+                                                      : result;
+                                                  return {
+                                                    id: `${callId}-${index}`,
+                                                    title:
+                                                      parsedResult.title ||
+                                                      `World Bank Data ${
+                                                        index + 1
+                                                      }`,
+                                                    content:
+                                                      parsedResult.content ||
+                                                      (typeof result ===
+                                                      "string"
+                                                        ? result
+                                                        : JSON.stringify(
+                                                            result,
+                                                            null,
+                                                            2
+                                                          )),
+                                                    fullContent:
+                                                      parsedResult.content ||
+                                                      (typeof result ===
+                                                      "string"
+                                                        ? result
+                                                        : JSON.stringify(
+                                                            result,
+                                                            null,
+                                                            2
+                                                          )),
+                                                    summary:
+                                                      parsedResult.content &&
+                                                      typeof parsedResult.content ===
+                                                        "string"
+                                                        ? parsedResult.content.substring(
+                                                            0,
+                                                            200
+                                                          ) + "..."
+                                                        : typeof result ===
+                                                          "string"
+                                                        ? result.substring(
+                                                            0,
+                                                            200
+                                                          ) + "..."
+                                                        : JSON.stringify(
+                                                            result,
+                                                            null,
+                                                            2
+                                                          ).substring(0, 200) +
+                                                          "...",
+                                                    url:
+                                                      parsedResult.url || "#",
+                                                    dataType: "worldbank_data",
+                                                    source:
+                                                      parsedResult.source ||
+                                                      "World Bank",
+                                                    date:
+                                                      parsedResult.date ||
+                                                      new Date().toISOString(),
+                                                    isStructured: true,
+                                                    metadata: {
+                                                      indicatorId:
+                                                        part.input?.query ||
+                                                        "Unknown",
+                                                      toolType: "getWBDetails",
+                                                    },
+                                                  };
+                                                }
+                                              );
+
+                                            console.log(
+                                              "[Tool Rendering] getWBDetails final rendering:",
+                                              {
+                                                callId,
+                                                hasResults,
+                                                resultsCount: wbResults.length,
+                                                willRenderCarousel:
+                                                  hasResults &&
+                                                  wbResults.length > 0,
+                                                results: wbResults.map((r) => ({
+                                                  id: r.id,
+                                                  title: r.title,
+                                                })),
+                                              }
+                                            );
+
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-3 sm:p-4"
+                                              >
+                                                <div className="flex items-center justify-between gap-3 mb-4">
+                                                  <div className="flex items-center gap-2 text-green-700 dark:text-green-400">
+                                                    <CheckCircle className="h-4 w-4" />
+                                                    <span className="font-medium">
+                                                      World Bank Data Retrieved
+                                                    </span>
+                                                    <span className="text-xs text-green-600 dark:text-green-300">
+                                                      ({wbResults.length}{" "}
+                                                      results)
+                                                    </span>
+                                                  </div>
+                                                  {part.input?.query && (
+                                                    <div
+                                                      className="text-xs font-mono text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/20 px-3 py-1 rounded border border-green-200 dark:border-green-700 max-w-[60%] truncate"
+                                                      title={part.input.query}
+                                                    >
+                                                      {part.input.query}
+                                                    </div>
+                                                  )}
+                                                </div>
+
+                                                {hasResults &&
+                                                wbResults.length > 0 ? (
+                                                  <SearchResultsCarousel
+                                                    results={wbResults}
+                                                    type="web"
+                                                    messageId={message.id}
+                                                    toolName="getWBDetails"
+                                                  />
+                                                ) : (
+                                                  <div className="text-center py-8">
+                                                    <div className="text-green-600 dark:text-green-400 text-sm">
+                                                      No results retrieved
+                                                    </div>
+                                                  </div>
+                                                )}
+                                              </div>
+                                            );
+                                          case "error":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
+                                                  <XCircle className="h-4 w-4" />
+                                                  <span className="font-medium">
+                                                    World Bank Data Fetch Failed
+                                                  </span>
+                                                </div>
+                                                <div className="text-sm text-red-600 dark:text-red-300">
+                                                  {part.errorText}
+                                                </div>
+                                              </div>
+                                            );
+                                        }
+                                        break;
+                                      }
+                                      // Get USA Spending Details Tool
+                                      case "tool-getUSASpendingDetails": {
+                                        const callId = part.toolCallId;
+                                        switch (part.state) {
+                                          case "input-streaming":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-purple-700 dark:text-purple-400 mb-2">
+                                                  <span className="text-lg">
+                                                    💰
+                                                  </span>
+                                                  <span className="font-medium">
+                                                    Fetching USA Spending
+                                                    Details
+                                                  </span>
+                                                  <Clock className="h-3 w-3 animate-spin" />
+                                                </div>
+                                                <div className="text-sm text-purple-600 dark:text-purple-300">
+                                                  Fetching USA Spending data...
+                                                </div>
+                                              </div>
+                                            );
+                                          case "input-available":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-purple-700 dark:text-purple-400 mb-2">
+                                                  <span className="text-lg">
+                                                    💰
+                                                  </span>
+                                                  <span className="font-medium">
+                                                    Fetching USA Spending
+                                                    Details
+                                                  </span>
+                                                  <Clock className="h-3 w-3 animate-spin" />
+                                                </div>
+                                                <div className="text-sm text-purple-600 dark:text-purple-300">
+                                                  <div className="bg-purple-100 dark:bg-purple-800/30 p-2 rounded">
+                                                    <div className="text-xs">
+                                                      Query: &quot;
+                                                      {part.input.query}&quot;
+                                                    </div>
+                                                  </div>
+                                                  <div className="mt-2 text-xs">
+                                                    Fetching USA Spending
+                                                    data...
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            );
+                                          case "output-available":
+                                            const usaData = part.output;
+
+                                            // Parse the USA data to handle multiple results
+                                            let parsedUSAResults = [];
+                                            let hasResults = true;
+
+                                            try {
+                                              if (typeof usaData === "string") {
+                                                // Check if it's an error message (starts with emoji or error text)
+                                                if (
+                                                  usaData.startsWith("❌") ||
+                                                  usaData.startsWith("Error") ||
+                                                  usaData.startsWith("🔐")
+                                                ) {
+                                                  hasResults = false;
+                                                  parsedUSAResults = [];
+                                                } else {
+                                                  const parsed =
+                                                    JSON.parse(usaData);
+
+                                                  // Check if it's a "no results" response
+                                                  if (parsed.found === false) {
+                                                    hasResults = false;
+                                                    parsedUSAResults = [];
+                                                  } else {
+                                                    // USA Spending tool returns a single object, not an array
+                                                    parsedUSAResults = [parsed];
+                                                  }
+                                                }
+                                              } else if (
+                                                Array.isArray(usaData)
+                                              ) {
+                                                parsedUSAResults = usaData;
+                                              } else {
+                                                parsedUSAResults = [usaData];
+                                              }
+                                            } catch (error) {
+                                              // If JSON parsing fails, treat as error
+                                              hasResults = false;
+                                              parsedUSAResults = [];
+                                            }
+
+                                            // Format results for SearchResultsCarousel
+                                            const usaResults =
+                                              parsedUSAResults.map(
+                                                (result, index) => {
+                                                  const parsedResult =
+                                                    typeof result === "string"
+                                                      ? JSON.parse(result)
+                                                      : result;
+                                                  return {
+                                                    id: `${callId}-${index}`,
+                                                    title:
+                                                      parsedResult.title ||
+                                                      `USA Spending Data ${
+                                                        index + 1
+                                                      }`,
+                                                    content:
+                                                      parsedResult.content ||
+                                                      (typeof result ===
+                                                      "string"
+                                                        ? result
+                                                        : JSON.stringify(
+                                                            result,
+                                                            null,
+                                                            2
+                                                          )),
+                                                    fullContent:
+                                                      parsedResult.content ||
+                                                      (typeof result ===
+                                                      "string"
+                                                        ? result
+                                                        : JSON.stringify(
+                                                            result,
+                                                            null,
+                                                            2
+                                                          )),
+                                                    summary:
+                                                      parsedResult.content &&
+                                                      typeof parsedResult.content ===
+                                                        "string"
+                                                        ? parsedResult.content.substring(
+                                                            0,
+                                                            200
+                                                          ) + "..."
+                                                        : typeof result ===
+                                                          "string"
+                                                        ? result.substring(
+                                                            0,
+                                                            200
+                                                          ) + "..."
+                                                        : JSON.stringify(
+                                                            result,
+                                                            null,
+                                                            2
+                                                          ).substring(0, 200) +
+                                                          "...",
+                                                    url:
+                                                      parsedResult.url || "#",
+                                                    dataType:
+                                                      "usaspending_data",
+                                                    source:
+                                                      parsedResult.source ||
+                                                      "USA Spending",
+                                                    date:
+                                                      parsedResult.date ||
+                                                      new Date().toISOString(),
+                                                    isStructured: true,
+                                                    metadata: {
+                                                      usaspendingId:
+                                                        part.input
+                                                          ?.usaspendingId ||
+                                                        "Unknown",
+                                                      toolType:
+                                                        "getUSASpendingDetails",
+                                                    },
+                                                  };
+                                                }
+                                              );
+
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg p-3 sm:p-4"
+                                              >
+                                                <div className="flex items-center justify-between gap-3 mb-4">
+                                                  <div className="flex items-center gap-2 text-purple-700 dark:text-purple-400">
+                                                    <CheckCircle className="h-4 w-4" />
+                                                    <span className="font-medium">
+                                                      USA Spending Data
+                                                      Retrieved
+                                                    </span>
+                                                    <span className="text-xs text-purple-600 dark:text-purple-300">
+                                                      ({usaResults.length}{" "}
+                                                      results)
+                                                    </span>
+                                                  </div>
+                                                  {part.input?.query && (
+                                                    <div
+                                                      className="text-xs font-mono text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-900/20 px-3 py-1 rounded border border-purple-200 dark:border-purple-700 max-w-[60%] truncate"
+                                                      title={part.input.query}
+                                                    >
+                                                      {part.input.query}
+                                                    </div>
+                                                  )}
+                                                </div>
+
+                                                {hasResults &&
+                                                usaResults.length > 0 ? (
+                                                  <SearchResultsCarousel
+                                                    results={usaResults}
+                                                    type="web"
+                                                    messageId={message.id}
+                                                    toolName="getUSASpendingDetails"
+                                                  />
+                                                ) : (
+                                                  <div className="text-center py-8">
+                                                    <div className="text-purple-600 dark:text-purple-400 text-sm">
+                                                      No results retrieved
+                                                    </div>
+                                                  </div>
+                                                )}
+                                              </div>
+                                            );
+                                          case "error":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
+                                                  <XCircle className="h-4 w-4" />
+                                                  <span className="font-medium">
+                                                    USA Spending Data Fetch
+                                                    Failed
+                                                  </span>
+                                                </div>
+                                                <div className="text-sm text-red-600 dark:text-red-300">
+                                                  {part.errorText}
+                                                </div>
+                                              </div>
+                                            );
+                                        }
+                                        break;
+                                      }
                                       // Comprehensive Search Tool
                                       case "tool-comprehensiveSearch": {
                                         const callId = part.toolCallId;
@@ -4841,23 +7053,32 @@ export function ChatInterface({
                                                   </span>
                                                   <span className="font-medium">
                                                     {part.type ===
-                                                      "tool-clinicalTrialsSearch" &&
-                                                      "Searching Clinical Trials"}
+                                                      "tool-createChart" &&
+                                                      "Creating Chart"}
                                                     {part.type ===
-                                                      "tool-getClinicalTrialDetails" &&
-                                                      "Fetching Clinical Trial Details"}
+                                                      "tool-codeExecution" &&
+                                                      "Executing Code"}
                                                     {part.type ===
-                                                      "tool-drugInformationSearch" &&
-                                                      "Searching Drug Information"}
+                                                      "tool-economicsSearch" &&
+                                                      "Searching Economics Data"}
                                                     {part.type ===
-                                                      "tool-biomedicalLiteratureSearch" &&
-                                                      "Searching Biomedical Literature"}
+                                                      "tool-FREDSearch" &&
+                                                      "Searching FRED Database"}
                                                     {part.type ===
-                                                      "tool-pharmaCompanyAnalysis" &&
-                                                      "Analyzing Pharmaceutical Company"}
+                                                      "tool-getFREDSeriesData" &&
+                                                      "Fetching FRED Series Data"}
                                                     {part.type ===
-                                                      "tool-comprehensiveSearch" &&
-                                                      "Comprehensive Search"}
+                                                      "tool-getBLSSeriesData" &&
+                                                      "Fetching BLS Series Data"}
+                                                    {part.type ===
+                                                      "tool-getWBDetails" &&
+                                                      "Fetching World Bank Details"}
+                                                    {part.type ===
+                                                      "tool-getUSASpendingDetails" &&
+                                                      "Fetching USA Spending Details"}
+                                                    {part.type ===
+                                                      "tool-webSearch" &&
+                                                      "Searching Web"}
                                                   </span>
                                                   <Clock className="h-3 w-3 animate-spin" />
                                                 </div>
@@ -4878,23 +7099,32 @@ export function ChatInterface({
                                                   </span>
                                                   <span className="font-medium">
                                                     {part.type ===
-                                                      "tool-clinicalTrialsSearch" &&
-                                                      "Searching Clinical Trials"}
+                                                      "tool-createChart" &&
+                                                      "Creating Chart"}
                                                     {part.type ===
-                                                      "tool-getClinicalTrialDetails" &&
-                                                      "Fetching Clinical Trial Details"}
+                                                      "tool-codeExecution" &&
+                                                      "Executing Code"}
                                                     {part.type ===
-                                                      "tool-drugInformationSearch" &&
-                                                      "Searching Drug Information"}
+                                                      "tool-economicsSearch" &&
+                                                      "Searching Economics Data"}
                                                     {part.type ===
-                                                      "tool-biomedicalLiteratureSearch" &&
-                                                      "Searching Biomedical Literature"}
+                                                      "tool-FREDSearch" &&
+                                                      "Searching FRED Database"}
                                                     {part.type ===
-                                                      "tool-pharmaCompanyAnalysis" &&
-                                                      "Analyzing Pharmaceutical Company"}
+                                                      "tool-getFREDSeriesData" &&
+                                                      "Fetching FRED Series Data"}
                                                     {part.type ===
-                                                      "tool-comprehensiveSearch" &&
-                                                      "Comprehensive Search"}
+                                                      "tool-getBLSSeriesData" &&
+                                                      "Fetching BLS Series Data"}
+                                                    {part.type ===
+                                                      "tool-getWBDetails" &&
+                                                      "Fetching World Bank Details"}
+                                                    {part.type ===
+                                                      "tool-getUSASpendingDetails" &&
+                                                      "Fetching USA Spending Details"}
+                                                    {part.type ===
+                                                      "tool-webSearch" &&
+                                                      "Searching Web"}
                                                   </span>
                                                   <Clock className="h-3 w-3 animate-spin" />
                                                 </div>
@@ -4902,7 +7132,7 @@ export function ChatInterface({
                                                   <div className="bg-indigo-100 dark:bg-indigo-800/30 p-2 rounded">
                                                     <div className="font-mono text-xs">
                                                       {part.type ===
-                                                      "tool-getClinicalTrialDetails" ? (
+                                                      "tool-parsePdfFromUrl" ? (
                                                         <>
                                                           NCT ID:{" "}
                                                           {part.input.nctId ||
@@ -4940,7 +7170,7 @@ export function ChatInterface({
                                             // Special handling for getClinicalTrialDetails
                                             if (
                                               part.type ===
-                                              "tool-getClinicalTrialDetails"
+                                              "tool-parsePdfFromUrl"
                                             ) {
                                               try {
                                                 const detailData = JSON.parse(
@@ -5045,8 +7275,8 @@ export function ChatInterface({
                                               }
                                             }
 
-                                            // Regular handling for other healthcare tools
-                                            const healthcareResults =
+                                            // Regular handling for other tools
+                                            const searchResults =
                                               extractSearchResults(part.output);
                                             return (
                                               <div
@@ -5058,56 +7288,83 @@ export function ChatInterface({
                                                     <CheckCircle className="h-4 w-4" />
                                                     <span className="font-medium">
                                                       {part.type ===
-                                                        "tool-clinicalTrialsSearch" &&
-                                                        "Clinical Trials Results"}
+                                                        "tool-createChart" &&
+                                                        "Chart Results"}
                                                       {part.type ===
-                                                        "tool-drugInformationSearch" &&
-                                                        "Drug Information Results"}
+                                                        "tool-codeExecution" &&
+                                                        "Code Execution Results"}
                                                       {part.type ===
-                                                        "tool-biomedicalLiteratureSearch" &&
-                                                        "Biomedical Literature Results"}
+                                                        "tool-economicsSearch" &&
+                                                        "Economics Data Results"}
                                                       {part.type ===
-                                                        "tool-pharmaCompanyAnalysis" &&
-                                                        "Pharmaceutical Analysis Results"}
+                                                        "tool-FREDSearch" &&
+                                                        "FRED Database Results"}
                                                       {part.type ===
-                                                        "tool-comprehensiveHealthcareSearch" &&
-                                                        "Healthcare Search Results"}
+                                                        "tool-getFREDSeriesData" &&
+                                                        "FRED Series Data Results"}
+                                                      {part.type ===
+                                                        "tool-getBLSSeriesData" &&
+                                                        "BLS Series Data Results"}
+                                                      {part.type ===
+                                                        "tool-getWBDetails" &&
+                                                        "World Bank Details Results"}
+                                                      {part.type ===
+                                                        "tool-getUSASpendingDetails" &&
+                                                        "USA Spending Details Results"}
+                                                      {part.type ===
+                                                        "tool-webSearch" &&
+                                                        "Web Search Results"}
                                                     </span>
                                                   </div>
-                                                  {healthcareResults.length >
-                                                    0 && (
+                                                  {searchResults.length > 0 && (
                                                     <div className="flex items-center gap-2 text-xs text-indigo-600 dark:text-indigo-400">
                                                       <span>
-                                                        {
-                                                          healthcareResults.length
-                                                        }{" "}
+                                                        {searchResults.length}{" "}
                                                         results
                                                       </span>
-                                                      {healthcareResults.some(
+                                                      {searchResults.some(
                                                         (r: any) =>
                                                           r.dataType ===
-                                                          "clinical_trials"
+                                                          "economics_data"
                                                       ) && (
                                                         <span className="px-2 py-0.5 bg-indigo-100 dark:bg-indigo-800/30 rounded">
-                                                          Clinical Trials
+                                                          Economics Data
                                                         </span>
                                                       )}
-                                                      {healthcareResults.some(
+                                                      {searchResults.some(
                                                         (r: any) =>
                                                           r.dataType ===
-                                                          "drug_labels"
+                                                          "fred_data"
                                                       ) && (
                                                         <span className="px-2 py-0.5 bg-indigo-100 dark:bg-indigo-800/30 rounded">
-                                                          Drug Labels
+                                                          FRED Data
                                                         </span>
                                                       )}
-                                                      {healthcareResults.some(
+                                                      {searchResults.some(
                                                         (r: any) =>
                                                           r.dataType ===
-                                                          "research_papers"
+                                                          "bls_data"
                                                       ) && (
                                                         <span className="px-2 py-0.5 bg-indigo-100 dark:bg-indigo-800/30 rounded">
-                                                          Research Papers
+                                                          BLS Data
+                                                        </span>
+                                                      )}
+                                                      {searchResults.some(
+                                                        (r: any) =>
+                                                          r.dataType ===
+                                                          "world_bank_data"
+                                                      ) && (
+                                                        <span className="px-2 py-0.5 bg-indigo-100 dark:bg-indigo-800/30 rounded">
+                                                          World Bank Data
+                                                        </span>
+                                                      )}
+                                                      {searchResults.some(
+                                                        (r: any) =>
+                                                          r.dataType ===
+                                                          "web_results"
+                                                      ) && (
+                                                        <span className="px-2 py-0.5 bg-indigo-100 dark:bg-indigo-800/30 rounded">
+                                                          Web Results
                                                         </span>
                                                       )}
                                                     </div>
@@ -5120,22 +7377,28 @@ export function ChatInterface({
                                                   </div>
                                                 )}
                                                 <SearchResultsCarousel
-                                                  results={healthcareResults}
+                                                  results={searchResults}
                                                   type="web"
                                                   toolName={
                                                     part.type ===
-                                                    "tool-clinicalTrialsSearch"
-                                                      ? "clinicalTrialsSearch"
+                                                    "tool-createChart"
+                                                      ? "createChart"
                                                       : part.type ===
-                                                        "tool-drugInformationSearch"
-                                                      ? "drugInformationSearch"
+                                                        "tool-codeExecution"
+                                                      ? "codeExecution"
                                                       : part.type ===
-                                                        "tool-biomedicalLiteratureSearch"
-                                                      ? "biomedicalLiteratureSearch"
+                                                        "tool-economicsSearch"
+                                                      ? "economicsSearch"
                                                       : part.type ===
-                                                        "tool-pharmaCompanyAnalysis"
-                                                      ? "pharmaCompanyAnalysis"
-                                                      : "comprehensiveHealthcareSearch"
+                                                        "tool-getFREDSeriesData"
+                                                      ? "getFREDSeriesData"
+                                                      : part.type ===
+                                                        "tool-getUSASpendingDetails"
+                                                      ? "getUSASpendingDetails"
+                                                      : part.type ===
+                                                        "tool-webSearch"
+                                                      ? "webSearch"
+                                                      : "webSearch"
                                                   }
                                                   messageId={message.id}
                                                 />
@@ -5694,6 +7957,6 @@ export function ChatInterface({
 
       {/* Auth Modal for Library access */}
       <AuthModal open={showAuthModal} onClose={() => setShowAuthModal(false)} />
-    </>
+    </ChatErrorBoundary>
   );
 }

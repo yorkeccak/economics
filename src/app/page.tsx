@@ -121,6 +121,16 @@ function HomeContent() {
     try {
       const { createClient } = await import("@/utils/supabase/client");
       const supabase = createClient();
+
+      // Check if Supabase is properly configured
+      if (
+        !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+        !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+      ) {
+        console.warn("[Page] Supabase not configured - cannot view usage");
+        return;
+      }
+
       const {
         data: { session },
       } = await supabase.auth.getSession();
@@ -160,7 +170,7 @@ function HomeContent() {
       );
       setCurrentSessionId(chatIdFromUrl || undefined);
     }
-  }, [searchParams]); // Watch searchParams changes
+  }, [searchParams, currentSessionId]); // Watch searchParams changes
 
   // Handle URL messages from auth callbacks
   useEffect(() => {
@@ -208,6 +218,18 @@ function HomeContent() {
       const processCheckout = async () => {
         try {
           const supabase = createClient();
+
+          // Check if Supabase is properly configured
+          if (
+            !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+            !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+          ) {
+            console.warn(
+              "[Page] Supabase not configured - cannot process checkout"
+            );
+            return;
+          }
+
           const {
             data: { session },
           } = await supabase.auth.getSession();
@@ -365,6 +387,16 @@ function HomeContent() {
     queryKey: ["sessions"],
     queryFn: async () => {
       const supabase = createClient();
+
+      // Check if Supabase is properly configured
+      if (
+        !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+        !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+      ) {
+        console.warn("[Page] Supabase not configured - cannot fetch sessions");
+        return [];
+      }
+
       const {
         data: { session },
       } = await supabase.auth.getSession();
@@ -384,6 +416,16 @@ function HomeContent() {
   const deleteMutation = useMutation({
     mutationFn: async (sessionId: string) => {
       const supabase = createClient();
+
+      // Check if Supabase is properly configured
+      if (
+        !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+        !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+      ) {
+        console.warn("[Page] Supabase not configured - cannot delete session");
+        return;
+      }
+
       const {
         data: { session },
       } = await supabase.auth.getSession();
@@ -776,7 +818,7 @@ function HomeContent() {
                   }}
                   transition={{ duration: 0.3, ease: [0.23, 1, 0.32, 1] }}
                 >
-                  <Cover>Everything</Cover>
+                  Economics
                 </motion.h1>
 
                 {/* "By Valyu" that slides out from under */}

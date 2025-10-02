@@ -6,9 +6,9 @@
 
 ![Bio by Valyu](public/valyu.png)
 
-## Why Bio?
+## Why Economics?
 
-Traditional biomedical research is fragmented across dozens of databases and platforms. Bio changes everything by providing:
+Traditional economics research is fragmented across dozens of databases and platforms. Economics changes everything by providing:
 
 - **🧬 Clinical-Grade Data** - ClinicalTrials.gov data, FDA drug labels, PubMed literature, and pharmaceutical company intelligence
 - **🔍 One Unified Search** - Powered by Valyu's comprehensive biomedical data API
@@ -20,7 +20,7 @@ Traditional biomedical research is fragmented across dozens of databases and pla
 
 ## Key Features
 
-### 🔥 Powerful Biomedical Tools
+### 🔥 Powerful Economics Tools
 
 - **Clinical Trials Search** - Search and analyze trials from ClinicalTrials.gov with detailed phase, enrollment, and outcome data
 - **Drug Information** - FDA drug labels with contraindications, side effects, and interaction warnings from DailyMed

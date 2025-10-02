@@ -4,14 +4,86 @@ import mammoth from "mammoth";
 // import pdfParse from "pdf-parse"; // Removed - using AI SDK instead
 import { Valyu } from "valyu-js";
 import { track } from "@vercel/analytics/server";
-import { PolarEventTracker } from "@/lib/polar-events";
+import { PolarEventTracker } from "./polar-events";
 import { Daytona } from "@daytonaio/sdk";
 import { createHash } from "node:crypto";
+
+// Helper function to handle API calls with timeout and retry logic
+async function callValyuWithTimeout(
+  valyu: Valyu,
+  searchQuery: string,
+  searchOptions: any,
+  timeoutMs: number = parseInt(process.env.VALYU_API_TIMEOUT || "30000"), // Configurable timeout
+  maxRetries: number = parseInt(process.env.VALYU_API_RETRIES || "2") // Configurable retries
+): Promise<any> {
+  let lastError: Error | null = null;
+
+  console.log("[Valyu API] Starting API call:", {
+    searchQuery,
+    searchOptions,
+    timeoutMs,
+    maxRetries,
+  });
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`[Valyu API] Attempt ${attempt + 1}/${maxRetries + 1}`);
+
+      // Create a timeout promise
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(
+          () => reject(new Error(`Request timeout after ${timeoutMs}ms`)),
+          timeoutMs
+        );
+      });
+
+      // Race between the actual API call and timeout
+      const result = await Promise.race([
+        valyu.search(searchQuery, searchOptions),
+        timeoutPromise,
+      ]);
+
+      console.log("[Valyu API] API call successful:", {
+        hasResults: !!(result as any)?.results,
+        resultsCount: (result as any)?.results?.length || 0,
+      });
+      return result;
+    } catch (error: any) {
+      lastError = error;
+
+      // If it's a timeout or network error, retry
+      if (
+        error.message.includes("timeout") ||
+        error.message.includes("ECONNRESET") ||
+        error.message.includes("ENOTFOUND") ||
+        error.message.includes("ETIMEDOUT")
+      ) {
+        if (attempt < maxRetries) {
+          // Exponential backoff: wait 1s, then 2s, then 4s
+          const delay = Math.pow(2, attempt) * 1000;
+          console.log(
+            `API call failed (attempt ${attempt + 1}/${
+              maxRetries + 1
+            }), retrying in ${delay}ms...`
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+      }
+
+      // If it's not a retryable error, or we've exhausted retries, throw
+      throw error;
+    }
+  }
+
+  throw lastError || new Error("All retry attempts failed");
+}
 
 // In-flight dedupe
 const inflight = new Map<string, Promise<any>>();
 function inflightKey(tool: string, query: string, opts?: any) {
-  return `${tool}::${query.trim().toLowerCase()}::${JSON.stringify(
+  const queryStr = typeof query === "string" ? query : String(query || "");
+  return `${tool}::${queryStr.trim().toLowerCase()}::${JSON.stringify(
     opts || {}
   )}`;
 }
@@ -37,7 +109,8 @@ async function once<T>(
 
 // URL normalization + ID helpers
 function canonQuery(q?: string) {
-  return (q || "").trim().replace(/\s+/g, " ").toLowerCase();
+  const queryStr = typeof q === "string" ? q : String(q || "");
+  return queryStr.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 function canonOptions(input: any): any {
@@ -315,7 +388,7 @@ function logDedupe(
   });
 }
 
-export const everythingTools = {
+export const economicsTools = {
   // File reading tools - allow the model to read user-provided files via URLs
   readTextFromUrl: tool({
     description:
@@ -836,7 +909,7 @@ export const everythingTools = {
     description: `Execute Python code securely in a Daytona Sandbox for financial modeling, data analysis, and calculations. CRITICAL: Always include print() statements to show results. Daytona can also capture rich artifacts (e.g., charts) when code renders images.
 
     IMPORTANT INSTRUCTIONS:
-    - You can only import standard library utilities (math, statistics, etc.), no external packages.
+    - DO NOT import any external packages. Only use standard library utilities (math, statistics, etc.).
     - Do **not** under any circumstances attempt to install packages (pip, conda, etc.) or load external files or networks.
     - Keep everything self-contained in plain Python.
     - Your entire code MUST be strictly **under 10,000 characters** (including all whitespace and comments). If your code is too long, shorten or simplify it.
@@ -1108,6 +1181,989 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
     },
   }),
 
+  economicsSearch: tool({
+    description:
+      "Search for comprehensive economics data including macroeconomic indicators, market trends, regulatory updates, company filings, and financial news using the Valyu DeepSearch API",
+    inputSchema: z.object({
+      query: z
+        .string()
+        .describe(
+          'Economics search query (e.g., "Apple latest quarterly earnings", "Bitcoin price trends", "Tesla SEC filings")'
+        ),
+      dataType: z
+        .enum([
+          "economic_indicators",
+          "economic_research",
+          "economic_news",
+          "economic_policy",
+          "economic_history",
+          "economic_comparative",
+        ])
+        .optional()
+        .describe("Type of economics data to focus on"),
+      maxResults: z
+        .number()
+        .min(1)
+        .max(20)
+        .optional()
+        .default(10)
+        .describe(
+          "Maximum number of results to return. This is not number of daya/hours of stock data, for example 1 yr of stock data for 1 company is 1 result"
+        ),
+    }),
+    execute: async ({ query, dataType, maxResults }, options) => {
+      const userId = (options as any)?.experimental_context?.userId;
+      const sessionId = (options as any)?.experimental_context?.sessionId;
+      const userTier = (options as any)?.experimental_context?.userTier;
+      const isDevelopment = process.env.NEXT_PUBLIC_APP_MODE === "development";
+
+      try {
+        // Check if Valyu API key is available
+        const apiKey = process.env.VALYU_API_KEY;
+        if (!apiKey) {
+          return "❌ Valyu API key not configured. Please add VALYU_API_KEY to your environment variables to enable economics search.";
+        }
+        const valyu = new Valyu(apiKey, "https://api.valyu.network/v1");
+
+        // Configure search based on data type
+        let searchOptions: any = {
+          maxNumResults: maxResults || 10,
+        };
+
+        const response = await callValyuWithTimeout(
+          valyu,
+          query,
+          searchOptions,
+          30000, // 30 second timeout
+          2 // 2 retries
+        );
+
+        // Track Valyu financial search call
+        await track("Valyu API Call", {
+          toolType: "economicsSearch",
+          query: query,
+          dataType: dataType || "auto",
+          maxResults: maxResults || 10,
+          resultCount: response?.results?.length || 0,
+          hasApiKey: !!apiKey,
+          cost: (response as any)?.total_deduction_dollars || null,
+          txId: (response as any)?.tx_id || null,
+        });
+
+        // Track usage for pay-per-use customers with Polar events
+        console.log("[EconomicsSearch] Tracking Valyu API usage with Polar:", {
+          userId,
+          sessionId,
+          userTier,
+          isDevelopment,
+        });
+
+        if (
+          userId &&
+          sessionId &&
+          userTier === "pay_per_use" &&
+          !isDevelopment
+        ) {
+          console.log("[EconomicsSearch] Tracking Valyu API usage with Polar:");
+          try {
+            const polarTracker = new PolarEventTracker();
+            // Use the actual Valyu API cost from response
+            const valyuCostDollars =
+              (response as any)?.total_deduction_dollars || 0;
+
+            // Bright green color: \x1b[92m ... \x1b[0m
+            console.log(
+              "\x1b[92m[EconomicsSearch] Tracking Valyu API usage with Polar:\x1b[0m",
+              {
+                userId,
+                sessionId,
+                valyuCostDollars,
+                resultCount: response?.results?.length || 0,
+              }
+            );
+
+            await polarTracker.trackValyuAPIUsage(
+              userId,
+              sessionId,
+              "economicsSearch",
+              valyuCostDollars,
+              {
+                query,
+                resultCount: response?.results?.length || 0,
+                dataType: dataType || "auto",
+                success: true,
+                tx_id: (response as any)?.tx_id,
+              }
+            );
+          } catch (error) {
+            console.error(
+              "[EconomicsSearch] Failed to track Valyu API usage:",
+              error
+            );
+            // Don't fail the search if usage tracking fails
+          }
+        }
+
+        // // Log the full API response for debugging
+        // console.log(
+        //   "[Financial Search] Full API Response:",
+        //   JSON.stringify(response, null, 2)
+        // );
+
+        if (!response || !response.results || response.results.length === 0) {
+          return `🔍 No economics data found for "${query}". Try rephrasing your search or checking if the company/symbol exists.`;
+        }
+
+        // // Log key information about the search
+        // console.log("[Financial Search] Summary:", {
+        //   query,
+        //   dataType,
+        //   resultCount: response.results.length,
+        //   totalCost: (response as any).price || "N/A",
+        //   txId: (response as any).tx_id || "N/A",
+        //   firstResultTitle: response.results[0]?.title,
+        //   firstResultLength: response.results[0]?.length,
+        // });
+
+        // Return structured data for the model to process
+        const formattedResponse = {
+          type: "economics_search",
+          query: query,
+          dataType: dataType,
+          resultCount: response.results.length,
+          results: response.results.map((result: any) => ({
+            title: result.title || "Financial Data",
+            url: result.url,
+            content: result.content,
+            date: result.metadata?.date,
+            source: result.metadata?.source,
+            dataType: result.data_type,
+            length: result.length,
+            image_url: result.image_url || {},
+            relevance_score: result.relevance_score,
+          })),
+        };
+
+        console.log(
+          "[Economics Search] Formatted response size:",
+          JSON.stringify(formattedResponse).length,
+          "bytes"
+        );
+
+        return JSON.stringify(formattedResponse, null, 2);
+      } catch (error) {
+        if (error instanceof Error) {
+          if (
+            error.message.includes("401") ||
+            error.message.includes("unauthorized")
+          ) {
+            return "🔐 Invalid Valyu API key. Please check your VALYU_API_KEY environment variable for economics search.";
+          }
+          if (error.message.includes("429")) {
+            return "⏱️ Rate limit exceeded. Please try again in a moment.";
+          }
+          if (
+            error.message.includes("network") ||
+            error.message.includes("fetch")
+          ) {
+            return "🌐 Network error connecting to Valyu API. Please check your internet connection.";
+          }
+        }
+
+        return `❌ Error searching economics data: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`;
+      }
+    },
+  }),
+
+  getFREDSeriesData: tool({
+    description:
+      "Get full detailed information about a specific FRED (Federal Reserve Economic Data) time series using a search query. Use this to find and retrieve FRED economic data.",
+    inputSchema: z.object({
+      query: z
+        .string()
+        .describe(
+          "Search query for FRED (Federal Reserve Economic Data) - e.g., 'GDP', 'unemployment rate', 'inflation'"
+        ),
+      maxResults: z
+        .number()
+        .min(1)
+        .max(5)
+        .optional()
+        .default(10)
+        .describe("Maximum number of results to return"),
+    }),
+    execute: async ({ query, maxResults }, options) => {
+      const userId = (options as any)?.experimental_context?.userId;
+      const sessionId = (options as any)?.experimental_context?.sessionId;
+      const userTier = (options as any)?.experimental_context?.userTier;
+      const isDevelopment = process.env.NEXT_PUBLIC_APP_MODE === "development";
+      const requestId = (options as any)?.experimental_context?.requestId;
+
+      try {
+        const apiKey = process.env.VALYU_API_KEY;
+        if (!apiKey) {
+          return "❌ Valyu API key not configured. Please add VALYU_API_KEY to your environment variables.";
+        }
+        const valyu = new Valyu(apiKey, "https://api.valyu.network/v1");
+
+        // Search for the specific FRED Series ID
+        const searchOptions: any = {
+          maxNumResults: 5,
+          searchType: "proprietary",
+          includedSources: ["valyu/valyu-fred"],
+          relevanceThreshold: 0.1, // Lower threshold since we're looking for exact match
+          isToolCall: true,
+        };
+        if (searchOptions.includedSources?.sort)
+          searchOptions.includedSources.sort();
+
+        const sessionKey = buildToolKey(
+          "getFREDSeriesData",
+          query,
+          searchOptions
+        );
+        console.log("[FRED Tool] Starting search with query:", query);
+        console.log("[FRED Tool] Search options:", searchOptions);
+
+        const response = await withSessionMemo(sessionId, sessionKey, () =>
+          once(
+            "getFREDSeriesData",
+            canonQuery(query),
+            canonOptions(searchOptions),
+            () =>
+              callValyuWithTimeout(
+                valyu,
+                `FRED series: ${query}`,
+                searchOptions,
+                30000, // 30 second timeout
+                2 // 2 retries
+              )
+          )
+        );
+
+        console.log("[FRED Tool] API Response:", {
+          hasResponse: !!response,
+          resultsCount: response?.results?.length || 0,
+          firstResult: response?.results?.[0]?.title || "No results",
+        });
+
+        const mapped = response.results.map((r: any) => {
+          const key = r.fred_id || r.metadata?.fred_id;
+          return {
+            id: key ? keyToUuid(key) : resultId(r),
+            title: r.title,
+            url: r.url,
+            content: r.content,
+            date: r.metadata?.date,
+            source: r.metadata?.source || r.source,
+          };
+        });
+
+        const unique = dedupeBy(mapped, (x: any) => x.id);
+        const final = dedupeAgainstRequest(requestId, unique, (x: any) => x.id);
+        logDedupe(
+          "getFREDSeriesData",
+          requestId,
+          response?.results?.length || 0,
+          mapped.length,
+          unique.length,
+          final
+        );
+
+        await track("Valyu API Call", {
+          toolType: "getFREDSeriesData",
+          query: query,
+          resultCount: response?.results?.length || 0,
+          hasApiKey: !!apiKey,
+          cost: (response as any)?.total_deduction_dollars || null,
+          txId: (response as any)?.tx_id || null,
+        });
+
+        if (
+          userId &&
+          sessionId &&
+          userTier === "pay_per_use" &&
+          !isDevelopment
+        ) {
+          try {
+            const polarTracker = new PolarEventTracker();
+            const valyuCostDollars =
+              (response as any)?.total_deduction_dollars || 0;
+            await polarTracker.trackValyuAPIUsage(
+              userId,
+              sessionId,
+              "getFREDSeriesData",
+              valyuCostDollars,
+              {
+                query,
+                resultCount: response?.results?.length || 0,
+                success: true,
+                tx_id: (response as any)?.tx_id,
+              }
+            );
+          } catch (error) {
+            console.error(
+              "[getFREDSeriesData] Failed to track Valyu API usage:",
+              error
+            );
+          }
+        }
+
+        if (!response || !response.results || response.results.length === 0) {
+          return JSON.stringify(
+            {
+              type: "FRED_series_details",
+              query: query,
+              found: false,
+              message: `No FRED series found for query: ${query}`,
+            },
+            null,
+            2
+          );
+        }
+
+        // Parse the full trial data
+        const result = response.results[0];
+        let trialData;
+        try {
+          trialData = JSON.parse(result.content);
+        } catch (e) {
+          // If parsing fails, return the raw content
+          return JSON.stringify(
+            {
+              type: "FRED_series_details",
+              query: query,
+              found: true,
+              title: result.title,
+              url: result.url,
+              content: result.content,
+              note: "Raw content provided - parsing failed",
+            },
+            null,
+            2
+          );
+        }
+
+        // Return the full parsed trial data
+        const formattedResponse = {
+          type: "FRED_series_details",
+          query: query,
+          found: true,
+          title: result.title,
+          url: result.url,
+          data: trialData, // Full trial data
+          note: `Full details for FRED series ${query}`,
+        };
+
+        return JSON.stringify(formattedResponse, null, 2);
+      } catch (error) {
+        if (error instanceof Error) {
+          if (
+            error.message.includes("401") ||
+            error.message.includes("unauthorized")
+          ) {
+            return "🔐 Invalid Valyu API key. Please check your VALYU_API_KEY environment variable.";
+          }
+        }
+        return `❌ Error fetching FRED series details: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`;
+      }
+    },
+  }),
+
+  getBLSSeriesData: tool({
+    description:
+      "Get full detailed information about a specific BLS (Bureau of Labor Statistics) time series using a search query. Use this to find and retrieve BLS economic data.",
+    inputSchema: z.object({
+      query: z
+        .string()
+        .describe(
+          "Search query for BLS (Bureau of Labor Statistics) - e.g., 'unemployment', 'employment', 'labor force'"
+        ),
+      maxResults: z
+        .number()
+        .min(1)
+        .max(5)
+        .optional()
+        .default(10)
+        .describe("Maximum number of results to return"),
+    }),
+    execute: async ({ query, maxResults }, options) => {
+      const userId = (options as any)?.experimental_context?.userId;
+      const sessionId = (options as any)?.experimental_context?.sessionId;
+      const userTier = (options as any)?.experimental_context?.userTier;
+      const isDevelopment = process.env.NEXT_PUBLIC_APP_MODE === "development";
+      const requestId = (options as any)?.experimental_context?.requestId;
+
+      try {
+        const apiKey = process.env.VALYU_API_KEY;
+        if (!apiKey) {
+          return "❌ Valyu API key not configured. Please add VALYU_API_KEY to your environment variables.";
+        }
+        const valyu = new Valyu(apiKey, "https://api.valyu.network/v1");
+
+        // Search for the specific FRED Series ID
+        const searchOptions: any = {
+          maxNumResults: 5,
+          searchType: "proprietary",
+          includedSources: ["valyu/valyu-bls"],
+          relevanceThreshold: 0.1, // Lower threshold since we're looking for exact match
+          isToolCall: true,
+        };
+        if (searchOptions.includedSources?.sort)
+          searchOptions.includedSources.sort();
+
+        const sessionKey = buildToolKey(
+          "getBLSSeriesData",
+          query,
+          searchOptions
+        );
+        const response = await withSessionMemo(sessionId, sessionKey, () =>
+          once(
+            "getBLSSeriesData",
+            canonQuery(query),
+            canonOptions(searchOptions),
+            () =>
+              callValyuWithTimeout(
+                valyu,
+                `BLS series: ${query}`,
+                searchOptions,
+                30000, // 30 second timeout
+                2 // 2 retries
+              )
+          )
+        );
+
+        const mapped = response.results.map((r: any) => {
+          const key = r.bls_id || r.metadata?.bls_id;
+          return {
+            id: key ? keyToUuid(key) : resultId(r),
+            title: r.title,
+            url: r.url,
+            content: r.content,
+            date: r.metadata?.date,
+            source: r.metadata?.source || r.source,
+          };
+        });
+
+        const unique = dedupeBy(mapped, (x: any) => x.id);
+        const final = dedupeAgainstRequest(requestId, unique, (x: any) => x.id);
+        logDedupe(
+          "getBLSSeriesData",
+          requestId,
+          response?.results?.length || 0,
+          mapped.length,
+          unique.length,
+          final
+        );
+
+        await track("Valyu API Call", {
+          toolType: "getBLSSeriesData",
+          query: query,
+          resultCount: response?.results?.length || 0,
+          hasApiKey: !!apiKey,
+          cost: (response as any)?.total_deduction_dollars || null,
+          txId: (response as any)?.tx_id || null,
+        });
+
+        if (
+          userId &&
+          sessionId &&
+          userTier === "pay_per_use" &&
+          !isDevelopment
+        ) {
+          try {
+            const polarTracker = new PolarEventTracker();
+            const valyuCostDollars =
+              (response as any)?.total_deduction_dollars || 0;
+            await polarTracker.trackValyuAPIUsage(
+              userId,
+              sessionId,
+              "getBLSSeriesData",
+              valyuCostDollars,
+              {
+                query,
+                resultCount: response?.results?.length || 0,
+                success: true,
+                tx_id: (response as any)?.tx_id,
+              }
+            );
+          } catch (error) {
+            console.error(
+              "[getBLSSeriesData] Failed to track Valyu API usage:",
+              error
+            );
+          }
+        }
+
+        if (!response || !response.results || response.results.length === 0) {
+          return JSON.stringify(
+            {
+              type: "BLS_series_details",
+              query: query,
+              found: false,
+              message: `No BLS series found with: ${query}`,
+            },
+            null,
+            2
+          );
+        }
+
+        // Parse the full trial data
+        const result = response.results[0];
+        let trialData;
+        try {
+          trialData = JSON.parse(result.content);
+        } catch (e) {
+          // If parsing fails, return the raw content
+          return JSON.stringify(
+            {
+              type: "BLS_series_details",
+              query: query,
+              found: true,
+              title: result.title,
+              url: result.url,
+              content: result.content,
+              note: "Raw content provided - parsing failed",
+            },
+            null,
+            2
+          );
+        }
+
+        // Return the full parsed trial data
+        const formattedResponse = {
+          type: "BLS_series_details",
+          query: query,
+          found: true,
+          title: result.title,
+          url: result.url,
+          data: trialData, // Full trial data
+          note: `Full details for BLS series ${query}`,
+        };
+
+        return JSON.stringify(formattedResponse, null, 2);
+      } catch (error) {
+        if (error instanceof Error) {
+          if (
+            error.message.includes("401") ||
+            error.message.includes("unauthorized")
+          ) {
+            return "🔐 Invalid Valyu API key. Please check your VALYU_API_KEY environment variable.";
+          }
+        }
+        return `❌ Error fetching BLS series details: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`;
+      }
+    },
+  }),
+
+  getWBDetails: tool({
+    description:
+      "Search for World Bank economic indicator metadata and descriptions. This tool finds information about indicators but does NOT fetch actual time series data. For time series data, use other tools like getFREDSeriesData or webSearch to find World Bank data sources.",
+    inputSchema: z.object({
+      query: z
+        .string()
+        .describe(
+          "Search query for World Bank economic indicator metadata and descriptions"
+        ),
+      maxResults: z
+        .number()
+        .min(1)
+        .max(20)
+        .optional()
+        .default(10)
+        .describe("Maximum number of results to return"),
+    }),
+    execute: async ({ query, maxResults }, options) => {
+      const userId = (options as any)?.experimental_context?.userId;
+      const sessionId = (options as any)?.experimental_context?.sessionId;
+      const userTier = (options as any)?.experimental_context?.userTier;
+      const isDevelopment = process.env.NEXT_PUBLIC_APP_MODE === "development";
+
+      try {
+        // Check if Valyu API key is available
+        const apiKey = process.env.VALYU_API_KEY;
+        if (!apiKey) {
+          return "❌ Valyu API key not configured. Please add VALYU_API_KEY to your environment variables to enable World Bank search.";
+        }
+        const valyu = new Valyu(apiKey, "https://api.valyu.network/v1");
+
+        // Configure search options for Wiley sources
+        const searchOptions: any = {
+          maxNumResults: maxResults || 10,
+          searchType: "proprietary",
+          includedSources: ["valyu/valyu-worldbank-indicators"],
+        };
+
+        console.log("[WorldBankSearch] Search options:", searchOptions);
+
+        // Add timeout configuration to prevent hanging
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+
+        let response;
+        try {
+          response = await valyu.search(query, searchOptions);
+          clearTimeout(timeoutId);
+        } catch (error: any) {
+          clearTimeout(timeoutId);
+          if (error.name === "AbortError") {
+            throw new Error(
+              "Valyu API request timed out after 30 seconds. The API might be slow or unresponsive."
+            );
+          }
+          throw error;
+        }
+
+        // Track Valyu Wiley search call
+        await track("Valyu API Call", {
+          toolType: "WorldBankSearch",
+          query: query,
+          maxResults: maxResults || 10,
+          resultCount: response?.results?.length || 0,
+          hasApiKey: !!apiKey,
+          cost: (response as any)?.total_deduction_dollars || null,
+          txId: (response as any)?.tx_id || null,
+        });
+
+        // Track usage for pay-per-use customers with Polar events
+        if (
+          userId &&
+          sessionId &&
+          userTier === "pay_per_use" &&
+          !isDevelopment
+        ) {
+          try {
+            const polarTracker = new PolarEventTracker();
+            const valyuCostDollars =
+              (response as any)?.total_deduction_dollars || 0;
+            console.log(
+              "[WorldBankSearch] Tracking Valyu API usage with Polar:",
+              {
+                userId,
+                sessionId,
+                valyuCostDollars,
+                resultCount: response?.results?.length || 0,
+              }
+            );
+            await polarTracker.trackValyuAPIUsage(
+              userId,
+              sessionId,
+              "WorldBankSearch",
+              valyuCostDollars,
+              {
+                query,
+                resultCount: response?.results?.length || 0,
+                success: true,
+                tx_id: (response as any)?.tx_id,
+              }
+            );
+          } catch (error) {
+            console.error(
+              "[WorldBankSearch] Failed to track Valyu API usage:",
+              error
+            );
+            // Don't fail the search if usage tracking fails
+          }
+        }
+
+        if (!response || !response.results || response.results.length === 0) {
+          return JSON.stringify(
+            {
+              type: "WB_series_details",
+              query: query,
+              found: false,
+              message: `No World Bank economic indicator metadata found for "${query}". This tool only searches for indicator descriptions, not time series data. Try rephrasing your search or use other tools for actual data.`,
+            },
+            null,
+            2
+          );
+        }
+
+        // Return the first result in the expected format for the chat interface
+        const firstResult = response.results[0];
+
+        // Truncate very large content to prevent processing issues
+        let content = firstResult.content;
+        const maxContentLength = 50000; // 50KB limit
+        if (content && content.length > maxContentLength) {
+          console.log(
+            `[WorldBank Search] Truncating large content from ${content.length} to ${maxContentLength} characters`
+          );
+          content =
+            content.substring(0, maxContentLength) +
+            "\n\n... (content truncated due to size)";
+        }
+
+        // Also truncate the data field to prevent massive JSON responses
+        let data = firstResult;
+        if (data && JSON.stringify(data).length > 20000) {
+          console.log(`[WorldBank Search] Truncating large data field`);
+          data = {
+            ...firstResult,
+            content: "Data available but truncated due to size",
+            originalSize: JSON.stringify(firstResult).length,
+          } as any;
+        }
+
+        const formattedResponse = {
+          type: "WB_series_details",
+          query: query,
+          found: true,
+          title: firstResult.title || "World Bank Economic Indicator",
+          url: firstResult.url,
+          content: content,
+          data: data,
+          note: `World Bank indicator metadata for ${query}. This is descriptive information about the indicator, not actual time series data.`,
+        };
+
+        console.log("[WorldBank Search] Formatted response:", {
+          hasResults: true,
+          title: firstResult.title,
+          contentLength: content?.length || 0,
+        });
+
+        try {
+          return JSON.stringify(formattedResponse, null, 2);
+        } catch (stringifyError) {
+          console.error(
+            "[WorldBank Search] JSON stringify failed:",
+            stringifyError
+          );
+          // Return a simplified version if stringify fails
+          return JSON.stringify(
+            {
+              type: "WB_series_details",
+              query: query,
+              found: true,
+              title: firstResult.title || "World Bank Economic Indicator",
+              url: firstResult.url,
+              content: "Data retrieved but too large to display fully",
+              note: `World Bank data for ${query} (truncated due to size)`,
+            },
+            null,
+            2
+          );
+        }
+      } catch (error) {
+        if (error instanceof Error) {
+          if (
+            error.message.includes("401") ||
+            error.message.includes("unauthorized")
+          ) {
+            return "🔐 Invalid Valyu API key. Please check your VALYU_API_KEY environment variable.";
+          }
+          if (error.message.includes("429")) {
+            return "⏱️ Rate limit exceeded. Please try again in a moment.";
+          }
+          if (
+            error.message.includes("network") ||
+            error.message.includes("fetch")
+          ) {
+            return "🌐 Network error connecting to Valyu API. Please check your internet connection.";
+          }
+        }
+
+        return `❌ Error searching World Bank economic indicator metadata: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`;
+      }
+    },
+  }),
+
+  getUSASpendingDetails: tool({
+    description:
+      "Search for authoritative federal spending award details using a search query. Use this to find and retrieve USA Spending data.",
+    inputSchema: z.object({
+      query: z
+        .string()
+        .describe(
+          "Search query for USA Spending - e.g., 'defense contracts', 'healthcare spending', 'education grants'"
+        ),
+      maxResults: z
+        .number()
+        .min(1)
+        .max(5)
+        .optional()
+        .default(10)
+        .describe("Maximum number of results to return"),
+    }),
+    execute: async ({ query, maxResults }, options) => {
+      const userId = (options as any)?.experimental_context?.userId;
+      const sessionId = (options as any)?.experimental_context?.sessionId;
+      const userTier = (options as any)?.experimental_context?.userTier;
+      const isDevelopment = process.env.NEXT_PUBLIC_APP_MODE === "development";
+      const requestId = (options as any)?.experimental_context?.requestId;
+
+      try {
+        const apiKey = process.env.VALYU_API_KEY;
+        if (!apiKey) {
+          return "❌ Valyu API key not configured. Please add VALYU_API_KEY to your environment variables.";
+        }
+        const valyu = new Valyu(apiKey, "https://api.valyu.network/v1");
+
+        // Search for the specific FRED Series ID
+        const searchOptions: any = {
+          maxNumResults: maxResults,
+          searchType: "proprietary",
+          includedSources: ["valyu/valyu-usaspending"],
+          relevanceThreshold: 0.1, // Lower threshold since we're looking for exact match
+          isToolCall: true,
+        };
+        if (searchOptions.includedSources?.sort)
+          searchOptions.includedSources.sort();
+
+        const sessionKey = buildToolKey(
+          "getUSASpendingDetails",
+          query,
+          searchOptions
+        );
+        const response = await withSessionMemo(sessionId, sessionKey, () =>
+          once(
+            "getUSASpendingDetails",
+            canonQuery(query),
+            canonOptions(searchOptions),
+            () =>
+              callValyuWithTimeout(
+                valyu,
+                `USASpending.gov Award: ${query}`,
+                searchOptions,
+                30000, // 30 second timeout
+                2 // 2 retries
+              )
+          )
+        );
+
+        const mapped = response.results.map((r: any) => {
+          const key = r.usaspending_id || r.metadata?.usaspending_id;
+          return {
+            id: key ? keyToUuid(key) : resultId(r),
+            title: r.title,
+            url: r.url,
+            content: r.content,
+            date: r.metadata?.date,
+            source: r.metadata?.source || r.source,
+          };
+        });
+
+        const unique = dedupeBy(mapped, (x: any) => x.id);
+        const final = dedupeAgainstRequest(requestId, unique, (x: any) => x.id);
+        logDedupe(
+          "getUSASpendingDetails",
+          requestId,
+          response?.results?.length || 0,
+          mapped.length,
+          unique.length,
+          final
+        );
+
+        await track("Valyu API Call", {
+          toolType: "getUSASpendingDetails",
+          query: query,
+          resultCount: response?.results?.length || 0,
+          hasApiKey: !!apiKey,
+          cost: (response as any)?.total_deduction_dollars || null,
+          txId: (response as any)?.tx_id || null,
+        });
+
+        if (
+          userId &&
+          sessionId &&
+          userTier === "pay_per_use" &&
+          !isDevelopment
+        ) {
+          try {
+            const polarTracker = new PolarEventTracker();
+            const valyuCostDollars =
+              (response as any)?.total_deduction_dollars || 0;
+            await polarTracker.trackValyuAPIUsage(
+              userId,
+              sessionId,
+              "getUSASpendingDetails",
+              valyuCostDollars,
+              {
+                query,
+                resultCount: response?.results?.length || 0,
+                success: true,
+                tx_id: (response as any)?.tx_id,
+              }
+            );
+          } catch (error) {
+            console.error(
+              "[getUSASpendingDetails] Failed to track Valyu API usage:",
+              error
+            );
+          }
+        }
+
+        if (!response || !response.results || response.results.length === 0) {
+          return JSON.stringify(
+            {
+              type: "USASpending_series_details",
+              query: query,
+              found: false,
+              message: `No USASpending series found with USASpending ID: ${query}`,
+            },
+            null,
+            2
+          );
+        }
+
+        // Parse the full trial data
+        const result = response.results[0];
+        let trialData;
+        try {
+          trialData = JSON.parse(result.content);
+        } catch (e) {
+          // If parsing fails, return the raw content
+          return JSON.stringify(
+            {
+              type: "USASpending_series_details",
+              query: query,
+              found: true,
+              title: result.title,
+              url: result.url,
+              content: result.content,
+              note: "Raw content provided - parsing failed",
+            },
+            null,
+            2
+          );
+        }
+
+        // Return the full parsed trial data
+        const formattedResponse = {
+          type: "USASpending_series_details",
+          query: query,
+          found: true,
+          title: result.title,
+          url: result.url,
+          data: trialData, // Full trial data
+          note: `Full details for USASpending series ${query}`,
+        };
+
+        return JSON.stringify(formattedResponse, null, 2);
+      } catch (error) {
+        if (error instanceof Error) {
+          if (
+            error.message.includes("401") ||
+            error.message.includes("unauthorized")
+          ) {
+            return "🔐 Invalid Valyu API key. Please check your VALYU_API_KEY environment variable.";
+          }
+        }
+        return `❌ Error fetching USASpending series details: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`;
+      }
+    },
+  }),
+
   webSearch: tool({
     description:
       "Search the web for general information on any topic using Valyu DeepSearch API with access to both proprietary sources and web content",
@@ -1144,13 +2200,22 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
             "webSearch",
             canonQuery(query),
             canonOptions(searchOptions),
-            () => valyu.search(query, searchOptions)
+            () =>
+              callValyuWithTimeout(
+                valyu,
+                query,
+                searchOptions,
+                30000, // 30 second timeout
+                2 // 2 retries
+              )
           )
         );
 
         // Attach canonical id (DOI -> arXiv -> URL) mapped to deterministic UUIDs
         const mapped = (response?.results || []).map((r: any) => {
-          const doi = extractDoi(r.url) || extractDoi(r.content);
+          const doi =
+            extractDoi(r.url) ||
+            extractDoi(typeof r.content === "string" ? r.content : "");
           const arxiv = extractArxivId(r.url);
           const normalized = normalizeUrl(r.url);
           const key = doi || arxiv || normalized;
@@ -1168,8 +2233,8 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
           };
         });
 
-        const unique = dedupeBy(mapped, (x) => x.id);
-        const final = dedupeAgainstRequest(requestId, unique, (x) => x.id);
+        const unique = dedupeBy(mapped, (x: any) => x.id);
+        const final = dedupeAgainstRequest(requestId, unique, (x: any) => x.id);
 
         // Track Valyu web search call
         await track("Valyu API Call", {
@@ -1240,7 +2305,17 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
           response.results.length === 0 ||
           final.length === 0
         ) {
-          return `🔍 No web results found for "${query}". Try rephrasing your search with different keywords.`;
+          return JSON.stringify(
+            {
+              type: "web_search",
+              query: query,
+              resultCount: 0,
+              results: [],
+              message: `No web results found for "${query}". Try rephrasing your search with different keywords.`,
+            },
+            null,
+            2
+          );
         }
 
         // Log key information about the search
@@ -1254,8 +2329,8 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
             "N/A",
           searchTime: metadata?.searchTime || "N/A",
           txId: (response as any).tx_id || "N/A",
-          firstResultTitle: final[0]?.title,
-          firstResultLength: final[0]?.length,
+          firstResultTitle: final[0]?.title || "N/A",
+          firstResultLength: final[0]?.content?.length || 0,
         });
 
         // Return structured data for the model to process
@@ -1322,4 +2397,4 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
 };
 
 // Export with both names for compatibility
-export const financeTools = everythingTools;
+export const financeTools = economicsTools;
