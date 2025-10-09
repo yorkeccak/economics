@@ -1611,6 +1611,8 @@ export function ChatInterface({
 
   const [isFormAtBottom, setIsFormAtBottom] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [finalAnswerProduced, setFinalAnswerProduced] = useState(false);
+  const finalAnswerTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [isStartingNewChat, setIsStartingNewChat] = useState(false);
   const [showLibraryCard, setShowLibraryCard] = useState(false);
   const [libraryCollectionId, setLibraryCollectionId] = useState<string | null>(
@@ -2717,13 +2719,33 @@ export function ChatInterface({
     // Automatically submit when all tool results are available
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
     onFinish: (message) => {
-      console.log("[ChatInterface] onFinish called:", {
+      console.log("[ChatInterface] 🎯 onFinish called:", {
         message,
         messageId: message?.message?.id || "unknown",
         messageRole: message?.message?.role || "unknown",
         messageParts: message?.message?.parts?.length || 0,
         currentMessagesCount: messages.length,
+        status,
       });
+
+      // Check if the message has substantial text content
+      const textParts =
+        message?.message?.parts?.filter((part) => part.type === "text") || [];
+      const hasSubstantialText = textParts.some(
+        (part) => (part as any).text && (part as any).text.length > 50
+      );
+
+      console.log("[ChatInterface] onFinish text analysis:", {
+        textPartsCount: textParts.length,
+        hasSubstantialText,
+        textLengths: textParts.map((part) => (part as any).text?.length || 0),
+      });
+
+      if (hasSubstantialText) {
+        console.log("[ChatInterface] ✅ onFinish - FINAL ANSWER CONFIRMED");
+      } else {
+        console.log("[ChatInterface] ❌ onFinish - No substantial text found");
+      }
 
       // Sync with server when chat completes (server has definitely processed increment by now)
       if (user) {
@@ -3376,7 +3398,139 @@ export function ChatInterface({
   useEffect(() => {
     console.log("[Chat Interface] Messages changed, count:", messages.length);
     onMessagesChange?.(messages.length > 0);
+
+    // Reset final answer state when messages are cleared
+    if (messages.length === 0) {
+      setFinalAnswerProduced(false);
+    }
   }, [messages.length]); // Remove onMessagesChange from dependencies to prevent infinite loops
+
+  // Comprehensive logging for final answer tracking
+  useEffect(() => {
+    console.log("[ChatInterface] Status/Messages change detected:", {
+      status,
+      messagesLength: messages.length,
+      lastMessageRole: messages[messages.length - 1]?.role,
+      lastMessageParts: messages[messages.length - 1]?.parts?.length || 0,
+    });
+
+    if (status === "ready" && messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      console.log("[ChatInterface] Last message details:", {
+        role: lastMessage?.role,
+        partsCount: lastMessage?.parts?.length || 0,
+        parts: lastMessage?.parts?.map((part) => ({
+          type: part.type,
+          hasText: !!(part as any).text,
+          textLength: (part as any).text?.length || 0,
+        })),
+      });
+
+      if (lastMessage?.role === "assistant" && lastMessage?.parts) {
+        const textParts = lastMessage.parts.filter(
+          (part) => part.type === "text"
+        );
+        console.log("[ChatInterface] Text parts found:", {
+          count: textParts.length,
+          parts: textParts.map((part) => ({
+            hasText: !!(part as any).text,
+            textLength: (part as any).text?.length || 0,
+            textPreview: (part as any).text?.substring(0, 100) || "No text",
+          })),
+        });
+
+        // Check if we have a substantial final answer
+        const hasSubstantialText = textParts.some(
+          (part) => (part as any).text && (part as any).text.length > 50
+        );
+
+        console.log("[ChatInterface] Final answer analysis:", {
+          hasTextParts: textParts.length > 0,
+          hasSubstantialText,
+          status,
+          isReady: status === "ready",
+        });
+
+        if (hasSubstantialText && status === "ready") {
+          console.log(
+            "[ChatInterface] ✅ FINAL ANSWER DETECTED - Status is ready with substantial text content"
+          );
+
+          // Force a re-render by updating a state that affects the key
+          console.log("[ChatInterface] 🔄 Forcing re-render for final answer");
+          setFinalAnswerProduced(true);
+
+          // Also manually trigger the onFinish logic since it's not being called
+          console.log("[ChatInterface] 🔧 Manually triggering onFinish logic");
+          if (user) {
+            console.log(
+              "[Chat Interface] Chat finished, syncing rate limit with server"
+            );
+            queryClient.invalidateQueries({ queryKey: ["rateLimit"] });
+          }
+        } else {
+          console.log(
+            "[ChatInterface] ❌ No final answer yet - Status:",
+            status,
+            "Substantial text:",
+            hasSubstantialText
+          );
+        }
+      }
+    }
+  }, [status, messages.length]);
+
+  // Timeout-based final answer detection as backup
+  useEffect(() => {
+    if (status === "ready" && messages.length > 0 && !finalAnswerProduced) {
+      console.log("[ChatInterface] Setting timeout for final answer detection");
+
+      // Clear any existing timeout
+      if (finalAnswerTimeoutRef.current) {
+        clearTimeout(finalAnswerTimeoutRef.current);
+      }
+
+      // Set a timeout to force final answer detection
+      finalAnswerTimeoutRef.current = setTimeout(() => {
+        console.log(
+          "[ChatInterface] ⏰ Timeout-based final answer detection triggered"
+        );
+
+        const lastMessage = messages[messages.length - 1];
+        if (lastMessage?.role === "assistant" && lastMessage?.parts) {
+          const textParts = lastMessage.parts.filter(
+            (part) => part.type === "text"
+          );
+          const hasSubstantialText = textParts.some(
+            (part) => (part as any).text && (part as any).text.length > 50
+          );
+
+          if (hasSubstantialText) {
+            console.log(
+              "[ChatInterface] ⏰ Timeout detected final answer - forcing render"
+            );
+            setFinalAnswerProduced(true);
+
+            // Manually trigger onFinish logic
+            if (user) {
+              console.log(
+                "[Chat Interface] Timeout-based chat finished, syncing rate limit"
+              );
+              queryClient.invalidateQueries({ queryKey: ["rateLimit"] });
+            }
+          }
+        }
+      }, 2000); // 2 second timeout
+    }
+
+    // Cleanup timeout on unmount or when status changes
+    return () => {
+      if (finalAnswerTimeoutRef.current) {
+        clearTimeout(finalAnswerTimeoutRef.current);
+        finalAnswerTimeoutRef.current = null;
+      }
+    };
+  }, [status, messages.length, finalAnswerProduced, user, queryClient]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -4421,7 +4575,7 @@ export function ChatInterface({
 
                   return (
                     <motion.div
-                      key={message.id}
+                      key={`${message.id}-${finalAnswerProduced}`}
                       data-message-id={message.id}
                       className="group"
                       initial={

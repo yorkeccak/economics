@@ -834,23 +834,53 @@ async function saveMessageToSession(
       content = [{ type: "text", text: "No content found" }];
     }
 
-    // Ensure content is properly formatted for database storage
-    const contentData = {
-      parts: content,
-      contextResources: message.contextResources || null,
-    };
+    const parts = content;
+    const hasContextResources = Object.prototype.hasOwnProperty.call(
+      message,
+      "contextResources"
+    );
+    const contextResources = hasContextResources
+      ? message.contextResources
+      : undefined;
+    const existingTokenUsageSource =
+      typeof message.token_usage === "object" && message.token_usage !== null
+        ? message.token_usage
+        : typeof message.tokenUsage === "object" &&
+          message.tokenUsage !== null
+        ? message.tokenUsage
+        : null;
+
+    const existingTokenUsage = existingTokenUsageSource
+      ? { ...existingTokenUsageSource }
+      : null;
+
+    let tokenUsage = existingTokenUsage;
+
+    if (hasContextResources) {
+      const normalizedResources =
+        contextResources === undefined ? null : contextResources;
+      tokenUsage = {
+        ...(tokenUsage || {}),
+        contextResources: normalizedResources,
+      };
+    }
 
     const insertData = {
       id: crypto.randomUUID(),
       session_id: sessionId,
       role: message.role,
-      content: contentData,
+      content: parts,
       tool_calls: message.tool_calls || message.toolCalls || null,
+      token_usage: tokenUsage || null,
     };
 
     console.log(
-      "[saveMessageToSession] Content data structure:",
-      JSON.stringify(contentData, null, 2)
+      "[saveMessageToSession] Parts content:",
+      JSON.stringify(parts, null, 2)
+    );
+    console.log(
+      "[saveMessageToSession] Token usage payload:",
+      JSON.stringify(tokenUsage, null, 2)
     );
 
     console.log(
