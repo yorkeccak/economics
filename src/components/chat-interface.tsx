@@ -2530,18 +2530,32 @@ export function ChatInterface({
             user?.id || "anonymous"
           );
           console.log("[prepareSendMessagesRequest] fastMode =", fastMode);
-          let enrichedMessages = messages;
+          const clonedMessages = Array.isArray(messages)
+            ? messages.map((message) => ({
+                ...message,
+                parts: Array.isArray(message.parts)
+                  ? message.parts.map((part) =>
+                      part && typeof part === "object"
+                        ? { ...part }
+                        : part
+                    )
+                  : message.parts,
+              }))
+            : messages;
+
+          let enrichedMessages = clonedMessages;
+          let attachmentsMerged = false;
           if (libraryContextRef.current.length > 0) {
             const pendingContext = libraryContextRef.current;
             lastSentContextRef.current = pendingContext;
             libraryContextRef.current = [];
 
-            const lastUserIndex = [...messages]
+            const lastUserIndex = [...clonedMessages]
               .map((msg) => msg.role)
               .lastIndexOf("user");
 
             if (lastUserIndex !== -1) {
-              enrichedMessages = messages.map((message, index) => {
+              enrichedMessages = clonedMessages.map((message, index) => {
                 if (index !== lastUserIndex) return message;
 
                 const originalText = (() => {
@@ -2596,6 +2610,7 @@ export function ChatInterface({
 
           // Convert any pending dropped files into base64 attachments for the API
           let attachments: any[] = [];
+          let decodedAttachmentParts: any[] = [];
           try {
             if (Array.isArray(dropzoneFiles) && dropzoneFiles.length > 0) {
               attachments = await Promise.all(
@@ -2665,10 +2680,108 @@ export function ChatInterface({
                   };
                 })
               );
+
+              decodedAttachmentParts = attachments.map((att) => {
+                try {
+                  const binary =
+                    att.dataBase64 != null
+                      ? Buffer.from(att.dataBase64, "base64")
+                      : null;
+
+                  if (!binary) {
+                    return null;
+                  }
+
+                  if (att.kind === "image") {
+                    return {
+                      type: "image",
+                      image: binary,
+                      mimeType: att.mediaType || "image/png",
+                      __fromClientAttachment: true,
+                    };
+                  }
+
+                  return {
+                    type: "file",
+                    data: binary,
+                    mediaType:
+                      att.mediaType || "application/octet-stream",
+                    filename: att.name || undefined,
+                    __fromClientAttachment: true,
+                  };
+                } catch (attachmentError) {
+                  console.warn(
+                    "[Chat Interface] Failed to decode attachment part",
+                    attachmentError
+                  );
+                  return null;
+                }
+              }).filter(Boolean);
             }
           } catch (e) {
             console.warn("Failed to serialize attachments", e);
           }
+
+          if (decodedAttachmentParts.length > 0 && Array.isArray(enrichedMessages)) {
+            const lastUserIndex = enrichedMessages
+              .map((msg) => msg.role)
+              .lastIndexOf("user");
+
+            if (lastUserIndex !== -1) {
+              const targetMessage = enrichedMessages[lastUserIndex];
+
+              if (targetMessage) {
+                const updatedMessage: any = {
+                  ...targetMessage,
+                };
+
+                const cloneParts = (parts: any) =>
+                  Array.isArray(parts)
+                    ? parts.map((part: any) =>
+                        part && typeof part === "object"
+                          ? { ...part }
+                          : part
+                      )
+                    : parts;
+
+                let existingParts: any[] = [];
+
+                if (Array.isArray(updatedMessage.parts)) {
+                  existingParts = cloneParts(updatedMessage.parts);
+                } else if (
+                  Array.isArray((updatedMessage as any).content)
+                ) {
+                  existingParts = cloneParts(
+                    (updatedMessage as any).content
+                  );
+                } else if (typeof updatedMessage.content === "string") {
+                  existingParts = [
+                    { type: "text", text: updatedMessage.content },
+                  ];
+                } else if (typeof updatedMessage.text === "string") {
+                  existingParts = [
+                    { type: "text", text: updatedMessage.text },
+                  ];
+                }
+
+                if (existingParts.length === 0) {
+                  existingParts = [];
+                }
+
+                updatedMessage.parts = [
+                  ...existingParts,
+                  ...decodedAttachmentParts,
+                ];
+                delete updatedMessage.content;
+                attachmentsMerged = true;
+
+                enrichedMessages = enrichedMessages.map((message, idx) =>
+                  idx === lastUserIndex ? updatedMessage : message
+                );
+              }
+            }
+          }
+
           if (user) {
             const supabase = createClient();
             const {
@@ -2691,6 +2804,7 @@ export function ChatInterface({
               sessionId: sessionIdRef.current,
               fastMode: fastModeRef.current,
               attachments,
+              attachmentsMerged,
             },
             headers,
           };
@@ -3011,9 +3125,24 @@ export function ChatInterface({
 
     const prevIds = messageIdsRef.current;
     const currentIds = messages.map((msg) => msg.id);
+    const idsUnchanged =
+      prevIds.length === currentIds.length &&
+      currentIds.every((id, index) => id === prevIds[index]);
+    const hasPendingContext = lastSentContextRef.current.length > 0;
+
+    if (idsUnchanged && !hasPendingContext) {
+      messageIdsRef.current = currentIds;
+      return;
+    }
+
     const newUserMessage = [...messages]
       .reverse()
       .find((msg) => !prevIds.includes(msg.id) && msg.role === "user");
+
+    if (!hasPendingContext) {
+      messageIdsRef.current = currentIds;
+      return;
+    }
 
     setContextResourceMap((prev) => {
       const next: Record<string, SavedItem[]> = {};
