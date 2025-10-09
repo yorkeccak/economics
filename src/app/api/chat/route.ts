@@ -11,10 +11,6 @@ import { createClient } from "@supabase/supabase-js";
 import { checkUserRateLimit } from "../../../lib/rate-limit";
 import { validateAccess } from "../../../lib/polar-access-validation";
 import { getPolarTrackedModel } from "../../../lib/polar-llm-strategy";
-import {
-  truncateConversationHistory,
-  getContextStats,
-} from "../../../lib/context-manager";
 
 // Allow streaming responses up to 120 seconds
 export const maxDuration = 800;
@@ -476,20 +472,6 @@ export async function POST(req: Request) {
       length: messages?.length,
       firstMessage: messages?.[0],
     });
-
-    // Context management: Check and truncate conversation history if needed
-    console.log("[Chat API] Checking context length before processing");
-    const contextStats = getContextStats(messages);
-    console.log("[Chat API] Context stats:", contextStats);
-
-    if (contextStats.isNearLimit) {
-      console.log(
-        "[Chat API] Context approaching limit, truncating conversation history"
-      );
-      messages = truncateConversationHistory(messages);
-      const newStats = getContextStats(messages);
-      console.log("[Chat API] After truncation:", newStats);
-    }
 
     // Convert messages to the format expected by the AI SDK
     console.log("[Chat API] Converting messages to AI SDK format");

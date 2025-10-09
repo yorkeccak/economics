@@ -2864,23 +2864,6 @@ export function ChatInterface({
       }
     },
     onError: (error) => {
-      // Handle context length exceeded errors specifically
-      if (error && typeof error === "object" && "error" in error) {
-        const errorObj = error.error as any;
-        if (errorObj?.code === "context_length_exceeded") {
-          console.error(
-            "[ChatInterface] Context length exceeded error:",
-            error
-          );
-          // Show user-friendly message
-          const contextExceededError = new Error(
-            "The conversation has become too long. Please start a new chat to continue."
-          );
-          contextExceededError.name = "ContextLengthExceeded";
-          throw contextExceededError;
-        }
-      }
-
       // Ultra-aggressive empty error detection and suppression
       const isEmptyError =
         !error ||
@@ -4364,7 +4347,7 @@ export function ChatInterface({
                         <motion.button
                           onClick={() =>
                             handlePromptClick(
-                              "Retrieve CPI-U headline and CPI-U less food & energy. Compute YoY and MoM (seasonally adjusted) for both. State whether each series is SA or NSA."
+                              "Fetch and align specific FRED and World Bank series into a macro dashboard with computed trends and a 6–12 month scenario outlook."
                             )
                           }
                           className="bg-gray-50 dark:bg-gray-800/50 p-2.5 sm:p-4 rounded-xl border border-gray-100 dark:border-gray-700 hover:border-gray-200 dark:hover:border-gray-600 transition-colors hover:bg-gray-100 dark:hover:bg-gray-800 text-left group"
@@ -4374,11 +4357,10 @@ export function ChatInterface({
                           whileTap={{ scale: 0.98 }}
                         >
                           <div className="text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2 text-xs sm:text-sm font-medium group-hover:text-gray-900 dark:group-hover:text-gray-100">
-                            🧮 CPI Headline vs. Core
+                            🧮 Trends and outlook
                           </div>
                           <div className="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400">
-                            Compare headline and core inflation, and clarify
-                            seasonal adjustment.
+                            Trends and outlook analysis with macro dashboard
                           </div>
                         </motion.button>
 
