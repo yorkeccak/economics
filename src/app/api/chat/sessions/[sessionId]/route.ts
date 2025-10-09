@@ -56,24 +56,55 @@ export async function GET(
     JSON.stringify({
       session,
       messages: messages.map((msg) => {
-        // Handle both old format (content as parts) and new format (content with parts and contextResources)
-        let parts = msg.content;
-        let contextResources = null;
+        let parts: any = [];
+        let contextResources: any = null;
+        let contextFromLegacy = false;
 
-        if (
+        if (Array.isArray(msg.content)) {
+          parts = msg.content;
+        } else if (
           msg.content &&
           typeof msg.content === "object" &&
           "parts" in msg.content
         ) {
-          parts = msg.content.parts;
-          contextResources = msg.content.contextResources;
+          const legacyContent = msg.content as any;
+          parts = Array.isArray(legacyContent.parts)
+            ? legacyContent.parts
+            : legacyContent.parts ?? [];
+          if (Object.prototype.hasOwnProperty.call(legacyContent, "contextResources")) {
+            contextResources = legacyContent.contextResources;
+            contextFromLegacy = true;
+          }
+        } else if (typeof msg.content === "string") {
+          parts = [{ type: "text", text: msg.content }];
+        } else if (msg.content) {
+          parts = msg.content;
+        }
+
+        if (!contextFromLegacy) {
+          const tokenUsageSource =
+            (typeof msg.token_usage === "object" && msg.token_usage !== null
+              ? msg.token_usage
+              : typeof msg.tokenUsage === "object" && msg.tokenUsage !== null
+              ? msg.tokenUsage
+              : null) as any;
+
+          if (
+            tokenUsageSource &&
+            Object.prototype.hasOwnProperty.call(
+              tokenUsageSource,
+              "contextResources"
+            )
+          ) {
+            contextResources = tokenUsageSource.contextResources;
+          }
         }
 
         return {
           id: msg.id,
           role: msg.role,
-          parts: parts,
-          contextResources: contextResources,
+          parts,
+          contextResources,
           toolCalls: msg.tool_calls,
           createdAt: msg.created_at,
         };

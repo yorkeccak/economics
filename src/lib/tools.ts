@@ -909,7 +909,7 @@ export const economicsTools = {
     description: `Execute Python code securely in a Daytona Sandbox for financial modeling, data analysis, and calculations. CRITICAL: Always include print() statements to show results. Daytona can also capture rich artifacts (e.g., charts) when code renders images.
 
     IMPORTANT INSTRUCTIONS:
-    - DO NOT import any external packages. Only use standard library utilities (math, statistics, etc.).
+    - DO NOT import any external packages, not even basic ones likes math. Only use standard library utilities (math, statistics, etc.).
     - Do **not** under any circumstances attempt to install packages (pip, conda, etc.) or load external files or networks.
     - Keep everything self-contained in plain Python.
     - Your entire code MUST be strictly **under 10,000 characters** (including all whitespace and comments). If your code is too long, shorten or simplify it.

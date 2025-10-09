@@ -1611,6 +1611,8 @@ export function ChatInterface({
 
   const [isFormAtBottom, setIsFormAtBottom] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [finalAnswerProduced, setFinalAnswerProduced] = useState(false);
+  const finalAnswerTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [isStartingNewChat, setIsStartingNewChat] = useState(false);
   const [showLibraryCard, setShowLibraryCard] = useState(false);
   const [libraryCollectionId, setLibraryCollectionId] = useState<string | null>(
@@ -2528,18 +2530,32 @@ export function ChatInterface({
             user?.id || "anonymous"
           );
           console.log("[prepareSendMessagesRequest] fastMode =", fastMode);
-          let enrichedMessages = messages;
+          const clonedMessages = Array.isArray(messages)
+            ? messages.map((message) => ({
+                ...message,
+                parts: Array.isArray(message.parts)
+                  ? message.parts.map((part) =>
+                      part && typeof part === "object"
+                        ? { ...part }
+                        : part
+                    )
+                  : message.parts,
+              }))
+            : messages;
+
+          let enrichedMessages = clonedMessages;
+          let attachmentsMerged = false;
           if (libraryContextRef.current.length > 0) {
             const pendingContext = libraryContextRef.current;
             lastSentContextRef.current = pendingContext;
             libraryContextRef.current = [];
 
-            const lastUserIndex = [...messages]
+            const lastUserIndex = [...clonedMessages]
               .map((msg) => msg.role)
               .lastIndexOf("user");
 
             if (lastUserIndex !== -1) {
-              enrichedMessages = messages.map((message, index) => {
+              enrichedMessages = clonedMessages.map((message, index) => {
                 if (index !== lastUserIndex) return message;
 
                 const originalText = (() => {
@@ -2594,6 +2610,7 @@ export function ChatInterface({
 
           // Convert any pending dropped files into base64 attachments for the API
           let attachments: any[] = [];
+          let decodedAttachmentParts: any[] = [];
           try {
             if (Array.isArray(dropzoneFiles) && dropzoneFiles.length > 0) {
               attachments = await Promise.all(
@@ -2663,10 +2680,108 @@ export function ChatInterface({
                   };
                 })
               );
+
+              decodedAttachmentParts = attachments.map((att) => {
+                try {
+                  const binary =
+                    att.dataBase64 != null
+                      ? Buffer.from(att.dataBase64, "base64")
+                      : null;
+
+                  if (!binary) {
+                    return null;
+                  }
+
+                  if (att.kind === "image") {
+                    return {
+                      type: "image",
+                      image: binary,
+                      mimeType: att.mediaType || "image/png",
+                      __fromClientAttachment: true,
+                    };
+                  }
+
+                  return {
+                    type: "file",
+                    data: binary,
+                    mediaType:
+                      att.mediaType || "application/octet-stream",
+                    filename: att.name || undefined,
+                    __fromClientAttachment: true,
+                  };
+                } catch (attachmentError) {
+                  console.warn(
+                    "[Chat Interface] Failed to decode attachment part",
+                    attachmentError
+                  );
+                  return null;
+                }
+              }).filter(Boolean);
             }
           } catch (e) {
             console.warn("Failed to serialize attachments", e);
           }
+
+          if (decodedAttachmentParts.length > 0 && Array.isArray(enrichedMessages)) {
+            const lastUserIndex = enrichedMessages
+              .map((msg) => msg.role)
+              .lastIndexOf("user");
+
+            if (lastUserIndex !== -1) {
+              const targetMessage = enrichedMessages[lastUserIndex];
+
+              if (targetMessage) {
+                const updatedMessage: any = {
+                  ...targetMessage,
+                };
+
+                const cloneParts = (parts: any) =>
+                  Array.isArray(parts)
+                    ? parts.map((part: any) =>
+                        part && typeof part === "object"
+                          ? { ...part }
+                          : part
+                      )
+                    : parts;
+
+                let existingParts: any[] = [];
+
+                if (Array.isArray(updatedMessage.parts)) {
+                  existingParts = cloneParts(updatedMessage.parts);
+                } else if (
+                  Array.isArray((updatedMessage as any).content)
+                ) {
+                  existingParts = cloneParts(
+                    (updatedMessage as any).content
+                  );
+                } else if (typeof updatedMessage.content === "string") {
+                  existingParts = [
+                    { type: "text", text: updatedMessage.content },
+                  ];
+                } else if (typeof updatedMessage.text === "string") {
+                  existingParts = [
+                    { type: "text", text: updatedMessage.text },
+                  ];
+                }
+
+                if (existingParts.length === 0) {
+                  existingParts = [];
+                }
+
+                updatedMessage.parts = [
+                  ...existingParts,
+                  ...decodedAttachmentParts,
+                ];
+                delete updatedMessage.content;
+                attachmentsMerged = true;
+
+                enrichedMessages = enrichedMessages.map((message, idx) =>
+                  idx === lastUserIndex ? updatedMessage : message
+                );
+              }
+            }
+          }
+
           if (user) {
             const supabase = createClient();
             const {
@@ -2689,6 +2804,7 @@ export function ChatInterface({
               sessionId: sessionIdRef.current,
               fastMode: fastModeRef.current,
               attachments,
+              attachmentsMerged,
             },
             headers,
           };
@@ -2717,13 +2833,33 @@ export function ChatInterface({
     // Automatically submit when all tool results are available
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
     onFinish: (message) => {
-      console.log("[ChatInterface] onFinish called:", {
+      console.log("[ChatInterface] 🎯 onFinish called:", {
         message,
         messageId: message?.message?.id || "unknown",
         messageRole: message?.message?.role || "unknown",
         messageParts: message?.message?.parts?.length || 0,
         currentMessagesCount: messages.length,
+        status,
       });
+
+      // Check if the message has substantial text content
+      const textParts =
+        message?.message?.parts?.filter((part) => part.type === "text") || [];
+      const hasSubstantialText = textParts.some(
+        (part) => (part as any).text && (part as any).text.length > 50
+      );
+
+      console.log("[ChatInterface] onFinish text analysis:", {
+        textPartsCount: textParts.length,
+        hasSubstantialText,
+        textLengths: textParts.map((part) => (part as any).text?.length || 0),
+      });
+
+      if (hasSubstantialText) {
+        console.log("[ChatInterface] ✅ onFinish - FINAL ANSWER CONFIRMED");
+      } else {
+        console.log("[ChatInterface] ❌ onFinish - No substantial text found");
+      }
 
       // Sync with server when chat completes (server has definitely processed increment by now)
       if (user) {
@@ -2989,9 +3125,24 @@ export function ChatInterface({
 
     const prevIds = messageIdsRef.current;
     const currentIds = messages.map((msg) => msg.id);
+    const idsUnchanged =
+      prevIds.length === currentIds.length &&
+      currentIds.every((id, index) => id === prevIds[index]);
+    const hasPendingContext = lastSentContextRef.current.length > 0;
+
+    if (idsUnchanged && !hasPendingContext) {
+      messageIdsRef.current = currentIds;
+      return;
+    }
+
     const newUserMessage = [...messages]
       .reverse()
       .find((msg) => !prevIds.includes(msg.id) && msg.role === "user");
+
+    if (!hasPendingContext) {
+      messageIdsRef.current = currentIds;
+      return;
+    }
 
     setContextResourceMap((prev) => {
       const next: Record<string, SavedItem[]> = {};
@@ -3376,7 +3527,139 @@ export function ChatInterface({
   useEffect(() => {
     console.log("[Chat Interface] Messages changed, count:", messages.length);
     onMessagesChange?.(messages.length > 0);
+
+    // Reset final answer state when messages are cleared
+    if (messages.length === 0) {
+      setFinalAnswerProduced(false);
+    }
   }, [messages.length]); // Remove onMessagesChange from dependencies to prevent infinite loops
+
+  // Comprehensive logging for final answer tracking
+  useEffect(() => {
+    console.log("[ChatInterface] Status/Messages change detected:", {
+      status,
+      messagesLength: messages.length,
+      lastMessageRole: messages[messages.length - 1]?.role,
+      lastMessageParts: messages[messages.length - 1]?.parts?.length || 0,
+    });
+
+    if (status === "ready" && messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      console.log("[ChatInterface] Last message details:", {
+        role: lastMessage?.role,
+        partsCount: lastMessage?.parts?.length || 0,
+        parts: lastMessage?.parts?.map((part) => ({
+          type: part.type,
+          hasText: !!(part as any).text,
+          textLength: (part as any).text?.length || 0,
+        })),
+      });
+
+      if (lastMessage?.role === "assistant" && lastMessage?.parts) {
+        const textParts = lastMessage.parts.filter(
+          (part) => part.type === "text"
+        );
+        console.log("[ChatInterface] Text parts found:", {
+          count: textParts.length,
+          parts: textParts.map((part) => ({
+            hasText: !!(part as any).text,
+            textLength: (part as any).text?.length || 0,
+            textPreview: (part as any).text?.substring(0, 100) || "No text",
+          })),
+        });
+
+        // Check if we have a substantial final answer
+        const hasSubstantialText = textParts.some(
+          (part) => (part as any).text && (part as any).text.length > 50
+        );
+
+        console.log("[ChatInterface] Final answer analysis:", {
+          hasTextParts: textParts.length > 0,
+          hasSubstantialText,
+          status,
+          isReady: status === "ready",
+        });
+
+        if (hasSubstantialText && status === "ready") {
+          console.log(
+            "[ChatInterface] ✅ FINAL ANSWER DETECTED - Status is ready with substantial text content"
+          );
+
+          // Force a re-render by updating a state that affects the key
+          console.log("[ChatInterface] 🔄 Forcing re-render for final answer");
+          setFinalAnswerProduced(true);
+
+          // Also manually trigger the onFinish logic since it's not being called
+          console.log("[ChatInterface] 🔧 Manually triggering onFinish logic");
+          if (user) {
+            console.log(
+              "[Chat Interface] Chat finished, syncing rate limit with server"
+            );
+            queryClient.invalidateQueries({ queryKey: ["rateLimit"] });
+          }
+        } else {
+          console.log(
+            "[ChatInterface] ❌ No final answer yet - Status:",
+            status,
+            "Substantial text:",
+            hasSubstantialText
+          );
+        }
+      }
+    }
+  }, [status, messages.length]);
+
+  // Timeout-based final answer detection as backup
+  useEffect(() => {
+    if (status === "ready" && messages.length > 0 && !finalAnswerProduced) {
+      console.log("[ChatInterface] Setting timeout for final answer detection");
+
+      // Clear any existing timeout
+      if (finalAnswerTimeoutRef.current) {
+        clearTimeout(finalAnswerTimeoutRef.current);
+      }
+
+      // Set a timeout to force final answer detection
+      finalAnswerTimeoutRef.current = setTimeout(() => {
+        console.log(
+          "[ChatInterface] ⏰ Timeout-based final answer detection triggered"
+        );
+
+        const lastMessage = messages[messages.length - 1];
+        if (lastMessage?.role === "assistant" && lastMessage?.parts) {
+          const textParts = lastMessage.parts.filter(
+            (part) => part.type === "text"
+          );
+          const hasSubstantialText = textParts.some(
+            (part) => (part as any).text && (part as any).text.length > 50
+          );
+
+          if (hasSubstantialText) {
+            console.log(
+              "[ChatInterface] ⏰ Timeout detected final answer - forcing render"
+            );
+            setFinalAnswerProduced(true);
+
+            // Manually trigger onFinish logic
+            if (user) {
+              console.log(
+                "[Chat Interface] Timeout-based chat finished, syncing rate limit"
+              );
+              queryClient.invalidateQueries({ queryKey: ["rateLimit"] });
+            }
+          }
+        }
+      }, 2000); // 2 second timeout
+    }
+
+    // Cleanup timeout on unmount or when status changes
+    return () => {
+      if (finalAnswerTimeoutRef.current) {
+        clearTimeout(finalAnswerTimeoutRef.current);
+        finalAnswerTimeoutRef.current = null;
+      }
+    };
+  }, [status, messages.length, finalAnswerProduced, user, queryClient]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -4417,7 +4700,7 @@ export function ChatInterface({
 
                   return (
                     <motion.div
-                      key={message.id}
+                      key={`${message.id}-${finalAnswerProduced}`}
                       data-message-id={message.id}
                       className="group"
                       initial={

@@ -32,18 +32,23 @@ export async function POST(req: Request) {
     }
 
     const {
-      messages,
+      messages: rawMessages,
       sessionId,
       attachments,
+      attachmentsMerged,
     }: {
       messages: UIMessage[];
       sessionId?: string;
       attachments?: any[];
+      attachmentsMerged?: boolean;
     } = requestData;
     console.log(
       "[Chat API] Incoming messages:",
-      JSON.stringify(messages, null, 2)
+      JSON.stringify(rawMessages, null, 2)
     );
+    let messages: any[] = Array.isArray(rawMessages)
+      ? rawMessages.map((message) => ({ ...message }))
+      : [];
 
     // Log the user's query for tool call tracking
     const userMessage = messages[messages.length - 1];
@@ -66,7 +71,8 @@ export async function POST(req: Request) {
         Array.isArray(attachments) &&
         attachments.length > 0 &&
         Array.isArray(messages) &&
-        messages.length > 0
+        messages.length > 0 &&
+        !attachmentsMerged
       ) {
         const lastIdx = messages.map((m: any) => m.role).lastIndexOf("user");
         const targetIdx = lastIdx >= 0 ? lastIdx : messages.length - 1;
@@ -107,6 +113,66 @@ export async function POST(req: Request) {
     } catch (e) {
       console.warn("Failed to merge attachments into message", e);
     }
+
+    const reviveBufferLike = (value: any) => {
+      if (
+        value &&
+        typeof value === "object" &&
+        value.type === "Buffer" &&
+        Array.isArray(value.data)
+      ) {
+        return Buffer.from(value.data);
+      }
+      return value;
+    };
+
+    const normalizePartsArray = (parts: any) => {
+      if (!Array.isArray(parts)) {
+        return parts;
+      }
+
+      return parts.map((part) => {
+        if (part && typeof part === "object") {
+          const normalizedPart: Record<string, any> = { ...part };
+
+          if ("image" in normalizedPart) {
+            normalizedPart.image = reviveBufferLike(normalizedPart.image);
+          }
+          if ("data" in normalizedPart) {
+            normalizedPart.data = reviveBufferLike(normalizedPart.data);
+          }
+          if ("content" in normalizedPart) {
+            normalizedPart.content = normalizePartsArray(
+              normalizedPart.content
+            );
+          }
+          if ("__fromClientAttachment" in normalizedPart) {
+            delete normalizedPart.__fromClientAttachment;
+          }
+
+          return normalizedPart;
+        }
+
+        return part;
+      });
+    };
+
+    messages = Array.isArray(messages)
+      ? messages.map((message) => {
+          const normalizedMessage: Record<string, any> = { ...message };
+          if ("parts" in normalizedMessage) {
+            normalizedMessage.parts = normalizePartsArray(
+              normalizedMessage.parts
+            );
+          }
+          if ("content" in normalizedMessage) {
+            normalizedMessage.content = normalizePartsArray(
+              normalizedMessage.content
+            );
+          }
+          return normalizedMessage;
+        })
+      : messages;
 
     // Determine if this is a user-initiated message (should count towards rate limit)
     // ONLY increment for the very first user message in a conversation
@@ -834,23 +900,53 @@ async function saveMessageToSession(
       content = [{ type: "text", text: "No content found" }];
     }
 
-    // Ensure content is properly formatted for database storage
-    const contentData = {
-      parts: content,
-      contextResources: message.contextResources || null,
-    };
+    const parts = content;
+    const hasContextResources = Object.prototype.hasOwnProperty.call(
+      message,
+      "contextResources"
+    );
+    const contextResources = hasContextResources
+      ? message.contextResources
+      : undefined;
+    const existingTokenUsageSource =
+      typeof message.token_usage === "object" && message.token_usage !== null
+        ? message.token_usage
+        : typeof message.tokenUsage === "object" &&
+          message.tokenUsage !== null
+        ? message.tokenUsage
+        : null;
+
+    const existingTokenUsage = existingTokenUsageSource
+      ? { ...existingTokenUsageSource }
+      : null;
+
+    let tokenUsage = existingTokenUsage;
+
+    if (hasContextResources) {
+      const normalizedResources =
+        contextResources === undefined ? null : contextResources;
+      tokenUsage = {
+        ...(tokenUsage || {}),
+        contextResources: normalizedResources,
+      };
+    }
 
     const insertData = {
       id: crypto.randomUUID(),
       session_id: sessionId,
       role: message.role,
-      content: contentData,
+      content: parts,
       tool_calls: message.tool_calls || message.toolCalls || null,
+      token_usage: tokenUsage || null,
     };
 
     console.log(
-      "[saveMessageToSession] Content data structure:",
-      JSON.stringify(contentData, null, 2)
+      "[saveMessageToSession] Parts content:",
+      JSON.stringify(parts, null, 2)
+    );
+    console.log(
+      "[saveMessageToSession] Token usage payload:",
+      JSON.stringify(tokenUsage, null, 2)
     );
 
     console.log(
