@@ -2535,9 +2535,7 @@ export function ChatInterface({
                 ...message,
                 parts: Array.isArray(message.parts)
                   ? message.parts.map((part) =>
-                      part && typeof part === "object"
-                        ? { ...part }
-                        : part
+                      part && typeof part === "object" ? { ...part } : part
                     )
                   : message.parts,
               }))
@@ -2681,48 +2679,52 @@ export function ChatInterface({
                 })
               );
 
-              decodedAttachmentParts = attachments.map((att) => {
-                try {
-                  const binary =
-                    att.dataBase64 != null
-                      ? Buffer.from(att.dataBase64, "base64")
-                      : null;
+              decodedAttachmentParts = attachments
+                .map((att) => {
+                  try {
+                    const binary =
+                      att.dataBase64 != null
+                        ? Buffer.from(att.dataBase64, "base64")
+                        : null;
 
-                  if (!binary) {
-                    return null;
-                  }
+                    if (!binary) {
+                      return null;
+                    }
 
-                  if (att.kind === "image") {
+                    if (att.kind === "image") {
+                      return {
+                        type: "image",
+                        image: binary,
+                        mimeType: att.mediaType || "image/png",
+                        __fromClientAttachment: true,
+                      };
+                    }
+
                     return {
-                      type: "image",
-                      image: binary,
-                      mimeType: att.mediaType || "image/png",
+                      type: "file",
+                      data: binary,
+                      mediaType: att.mediaType || "application/octet-stream",
+                      filename: att.name || undefined,
                       __fromClientAttachment: true,
                     };
+                  } catch (attachmentError) {
+                    console.warn(
+                      "[Chat Interface] Failed to decode attachment part",
+                      attachmentError
+                    );
+                    return null;
                   }
-
-                  return {
-                    type: "file",
-                    data: binary,
-                    mediaType:
-                      att.mediaType || "application/octet-stream",
-                    filename: att.name || undefined,
-                    __fromClientAttachment: true,
-                  };
-                } catch (attachmentError) {
-                  console.warn(
-                    "[Chat Interface] Failed to decode attachment part",
-                    attachmentError
-                  );
-                  return null;
-                }
-              }).filter(Boolean);
+                })
+                .filter(Boolean);
             }
           } catch (e) {
             console.warn("Failed to serialize attachments", e);
           }
 
-          if (decodedAttachmentParts.length > 0 && Array.isArray(enrichedMessages)) {
+          if (
+            decodedAttachmentParts.length > 0 &&
+            Array.isArray(enrichedMessages)
+          ) {
             const lastUserIndex = enrichedMessages
               .map((msg) => msg.role)
               .lastIndexOf("user");
@@ -2738,9 +2740,7 @@ export function ChatInterface({
                 const cloneParts = (parts: any) =>
                   Array.isArray(parts)
                     ? parts.map((part: any) =>
-                        part && typeof part === "object"
-                          ? { ...part }
-                          : part
+                        part && typeof part === "object" ? { ...part } : part
                       )
                     : parts;
 
@@ -2748,20 +2748,14 @@ export function ChatInterface({
 
                 if (Array.isArray(updatedMessage.parts)) {
                   existingParts = cloneParts(updatedMessage.parts);
-                } else if (
-                  Array.isArray((updatedMessage as any).content)
-                ) {
-                  existingParts = cloneParts(
-                    (updatedMessage as any).content
-                  );
+                } else if (Array.isArray((updatedMessage as any).content)) {
+                  existingParts = cloneParts((updatedMessage as any).content);
                 } else if (typeof updatedMessage.content === "string") {
                   existingParts = [
                     { type: "text", text: updatedMessage.content },
                   ];
                 } else if (typeof updatedMessage.text === "string") {
-                  existingParts = [
-                    { type: "text", text: updatedMessage.text },
-                  ];
+                  existingParts = [{ type: "text", text: updatedMessage.text }];
                 }
 
                 if (existingParts.length === 0) {
@@ -2870,6 +2864,23 @@ export function ChatInterface({
       }
     },
     onError: (error) => {
+      // Handle context length exceeded errors specifically
+      if (error && typeof error === "object" && "error" in error) {
+        const errorObj = error.error as any;
+        if (errorObj?.code === "context_length_exceeded") {
+          console.error(
+            "[ChatInterface] Context length exceeded error:",
+            error
+          );
+          // Show user-friendly message
+          const contextExceededError = new Error(
+            "The conversation has become too long. Please start a new chat to continue."
+          );
+          contextExceededError.name = "ContextLengthExceeded";
+          throw contextExceededError;
+        }
+      }
+
       // Ultra-aggressive empty error detection and suppression
       const isEmptyError =
         !error ||
