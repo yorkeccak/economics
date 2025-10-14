@@ -87,7 +87,7 @@ import "katex/dist/katex.min.css";
 import katex from "katex";
 import { FinancialChart } from "@/components/financial-chart";
 import { CitationTextRenderer } from "@/components/citation-text-renderer";
-import { CitationMap } from "@/lib/citation-utils";
+import type { Citation, CitationMap } from "@/lib/citation-utils";
 import ClinicalTrialsView from "@/components/ClinicalTrialsView";
 const JsonView = dynamic(() => import("@uiw/react-json-view"), {
   ssr: false,
@@ -116,6 +116,59 @@ import { openai } from "@ai-sdk/openai";
 // Debug toggles removed per request
 
 // Separate component for reasoning to avoid hook violations
+type CitationToolCategory = Citation["toolType"];
+
+const mapResultTypeToSavedItemType = (
+  type:
+    | "economics"
+    | "financial"
+    | "web"
+    | "wiley"
+    | "worldBank"
+    | "fred"
+    | "bls"
+    | "usaSpending"
+    | "document"
+    | "healthcare"
+): SavedItem["type"] => {
+  switch (type) {
+    case "economics":
+    case "worldBank":
+    case "fred":
+    case "bls":
+    case "usaSpending":
+      return "financial";
+    case "document":
+      return "web";
+    case "financial":
+    case "web":
+    case "wiley":
+    case "healthcare":
+      return type;
+    default:
+      return undefined;
+  }
+};
+
+const mapToolTypeToCitationCategory = (
+  toolType?: string
+): CitationToolCategory => {
+  switch (toolType) {
+    case "tool-webSearch":
+      return "web";
+    case "tool-economicsSearch":
+    case "tool-getFREDSeriesData":
+    case "tool-getBLSSeriesData":
+    case "tool-getWBDetails":
+    case "tool-getUSASpendingDetails":
+      return "financial";
+    case "tool-wileySearch":
+      return "wiley";
+    default:
+      return undefined;
+  }
+};
+
 const ReasoningComponent = ({
   part,
   messageId,
@@ -521,7 +574,7 @@ export const SearchResultCard = ({
           : String(result.title ?? "Untitled Result"),
       url: result.url ?? undefined,
       source: result.source ?? undefined,
-      type,
+      type: mapResultTypeToSavedItemType(type),
       date: result.date ?? undefined,
       data: result,
     }),
@@ -4473,25 +4526,9 @@ export function ChatInterface({
                                                                 item.relevanceScore ||
                                                                 item.relevance_score,
                                                               toolType:
-                                                                p.type ===
-                                                                "tool-economicsSearch"
-                                                                  ? "economics"
-                                                                  : p.type ===
-                                                                    "tool-webSearch"
-                                                                  ? "web"
-                                                                  : p.type ===
-                                                                    "tool-getFREDSeriesData"
-                                                                  ? "fred"
-                                                                  : p.type ===
-                                                                    "tool-getBLSSeriesData"
-                                                                  ? "bls"
-                                                                  : p.type ===
-                                                                    "tool-getWBDetails"
-                                                                  ? "world-bank"
-                                                                  : p.type ===
-                                                                    "tool-getUSASpendingDetails"
-                                                                  ? "usa-spending"
-                                                                  : "other",
+                                                                mapToolTypeToCitationCategory(
+                                                                  p.type
+                                                                ),
                                                             },
                                                           ];
                                                           citationNumber++;
@@ -4692,14 +4729,17 @@ export function ChatInterface({
                                                 className="mt-2 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded p-2 sm:p-3"
                                               >
                                                 <div className="flex items-center gap-2 text-purple-700 dark:text-purple-400 mb-2">
-                                                  <span className="text-lg">🔍</span>
+                                                  <span className="text-lg">
+                                                    🔍
+                                                  </span>
                                                   <span className="font-medium">
                                                     Economics Search
                                                   </span>
                                                   <Clock className="h-3 w-3 animate-spin" />
                                                 </div>
                                                 <div className="text-xs text-purple-600 dark:text-purple-300">
-                                                  Gathering macro research and news...
+                                                  Gathering macro research and
+                                                  news...
                                                 </div>
                                               </div>
                                             );
@@ -4710,7 +4750,9 @@ export function ChatInterface({
                                                 className="mt-2 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded p-2 sm:p-3"
                                               >
                                                 <div className="flex items-center gap-2 text-purple-700 dark:text-purple-400 mb-2">
-                                                  <span className="text-lg">🔍</span>
+                                                  <span className="text-lg">
+                                                    🔍
+                                                  </span>
                                                   <span className="font-medium">
                                                     Economics Search
                                                   </span>
@@ -4719,30 +4761,43 @@ export function ChatInterface({
                                                 <div className="text-xs text-purple-600 dark:text-purple-300">
                                                   <div className="bg-purple-100 dark:bg-purple-800/30 p-2 rounded">
                                                     <div className="font-mono text-xs">
-                                                      Query: &quot;{part.input.query}&quot;
+                                                      Query: &quot;
+                                                      {part.input.query}&quot;
                                                       {part.input.dataType &&
-                                                        part.input.dataType !== "auto" && (
+                                                        part.input.dataType !==
+                                                          "auto" && (
                                                           <>
                                                             <br />
-                                                            Data type: {part.input.dataType}
+                                                            Data type:{" "}
+                                                            {
+                                                              part.input
+                                                                .dataType
+                                                            }
                                                           </>
                                                         )}
-                                                      {part.input.maxResults && (
+                                                      {part.input
+                                                        .maxResults && (
                                                         <>
                                                           <br />
-                                                          Max results: {part.input.maxResults}
+                                                          Max results:{" "}
+                                                          {
+                                                            part.input
+                                                              .maxResults
+                                                          }
                                                         </>
                                                       )}
                                                     </div>
                                                   </div>
                                                   <div className="mt-2 text-xs">
-                                                    Searching Valyu DeepSearch...
+                                                    Searching Valyu
+                                                    DeepSearch...
                                                   </div>
                                                 </div>
                                               </div>
                                             );
                                           case "output-available": {
-                                            const results = extractSearchResults(part.output);
+                                            const results =
+                                              extractSearchResults(part.output);
                                             return (
                                               <div
                                                 key={callId}
@@ -4804,14 +4859,17 @@ export function ChatInterface({
                                                 className="mt-2 bg-cyan-50 dark:bg-cyan-900/20 border border-cyan-200 dark:border-cyan-800 rounded p-2 sm:p-3"
                                               >
                                                 <div className="flex items-center gap-2 text-cyan-700 dark:text-cyan-400 mb-2">
-                                                  <span className="text-lg">🌐</span>
+                                                  <span className="text-lg">
+                                                    🌐
+                                                  </span>
                                                   <span className="font-medium">
                                                     Web Search
                                                   </span>
                                                   <Clock className="h-3 w-3 animate-spin" />
                                                 </div>
                                                 <div className="text-xs text-cyan-600 dark:text-cyan-300">
-                                                  Gathering relevant web content...
+                                                  Gathering relevant web
+                                                  content...
                                                 </div>
                                               </div>
                                             );
@@ -4822,7 +4880,9 @@ export function ChatInterface({
                                                 className="mt-2 bg-cyan-50 dark:bg-cyan-900/20 border border-cyan-200 dark:border-cyan-800 rounded p-2 sm:p-3"
                                               >
                                                 <div className="flex items-center gap-2 text-cyan-700 dark:text-cyan-400 mb-2">
-                                                  <span className="text-lg">🌐</span>
+                                                  <span className="text-lg">
+                                                    🌐
+                                                  </span>
                                                   <span className="font-medium">
                                                     Web Search
                                                   </span>
@@ -4831,17 +4891,20 @@ export function ChatInterface({
                                                 <div className="text-xs text-cyan-600 dark:text-cyan-300">
                                                   <div className="bg-cyan-100 dark:bg-cyan-800/30 p-2 rounded">
                                                     <div className="text-xs">
-                                                      Query: &quot;{part.input.query}&quot;
+                                                      Query: &quot;
+                                                      {part.input.query}&quot;
                                                     </div>
                                                   </div>
                                                   <div className="mt-2 text-xs">
-                                                    Crawling latest public sources...
+                                                    Crawling latest public
+                                                    sources...
                                                   </div>
                                                 </div>
                                               </div>
                                             );
                                           case "output-available": {
-                                            const results = extractSearchResults(part.output);
+                                            const results =
+                                              extractSearchResults(part.output);
                                             return (
                                               <div
                                                 key={callId}
@@ -4892,10 +4955,9 @@ export function ChatInterface({
                                         }
                                         break;
                                       }
+                                      // Chart Creation Tool
                                       case "tool-createChart": {
                                         const callId = part.toolCallId;
-                                        const isExpanded = expandedTools.has(callId);
-
                                         switch (part.state) {
                                           case "input-streaming":
                                             return (
@@ -4904,12 +4966,17 @@ export function ChatInterface({
                                                 className="mt-2 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded p-2 sm:p-3"
                                               >
                                                 <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-400 mb-2">
-                                                  <span className="text-lg">📈</span>
-                                                  <span className="font-medium">Creating Chart</span>
+                                                  <span className="text-lg">
+                                                    📈
+                                                  </span>
+                                                  <span className="font-medium">
+                                                    Creating Chart
+                                                  </span>
                                                   <Clock className="h-3 w-3 animate-spin" />
                                                 </div>
                                                 <div className="text-sm text-emerald-600 dark:text-emerald-300">
-                                                  Preparing chart visualization...
+                                                  Preparing chart
+                                                  visualization...
                                                 </div>
                                               </div>
                                             );
@@ -4920,73 +4987,114 @@ export function ChatInterface({
                                                 className="mt-2 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded p-2 sm:p-3"
                                               >
                                                 <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-400 mb-2">
-                                                  <span className="text-lg">📈</span>
-                                                  <span className="font-medium">Creating Chart</span>
+                                                  <span className="text-lg">
+                                                    📈
+                                                  </span>
+                                                  <span className="font-medium">
+                                                    Creating Chart
+                                                  </span>
                                                   <Clock className="h-3 w-3 animate-spin" />
                                                 </div>
                                                 <div className="text-sm text-emerald-600 dark:text-emerald-300">
                                                   <div className="bg-emerald-100 dark:bg-emerald-800/30 p-2 rounded">
                                                     <div className="font-mono text-xs">
-                                                      Creating {part.input.type} chart: &quot;{part.input.title}&quot;
+                                                      Creating {part.input.type}{" "}
+                                                      chart: &quot;
+                                                      {part.input.title}
+                                                      &quot;
                                                       <br />
-                                                      Data Series: {part.input.dataSeries?.length || 0}
+                                                      Data Series:{" "}
+                                                      {part.input.dataSeries
+                                                        ?.length || 0}
                                                     </div>
                                                   </div>
                                                   <div className="mt-2 text-xs">
-                                                    Generating interactive visualization...
+                                                    Generating interactive
+                                                    visualization...
                                                   </div>
                                                 </div>
                                               </div>
                                             );
                                           case "output-available":
+                                            // Charts are expanded by default, collapsed only if explicitly set
+                                            const isChartExpanded =
+                                              !expandedTools.has(
+                                                `collapsed-${callId}`
+                                              );
                                             return (
-                                              <div key={callId} className="mt-2">
-                                                {isExpanded ? (
+                                              <div
+                                                key={callId}
+                                                className="mt-2"
+                                              >
+                                                {isChartExpanded ? (
                                                   <div className="relative">
                                                     <Button
                                                       variant="ghost"
                                                       size="sm"
-                                                      onClick={() => toggleChartExpansion(callId)}
-                                                      className="absolute right-2 top-2 h-7 w-7 p-0 text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
-                                                      title="Collapse chart"
+                                                      onClick={() =>
+                                                        toggleChartExpansion(
+                                                          callId
+                                                        )
+                                                      }
+                                                      className="absolute right-2 top-2 z-10 h-6 w-6 p-0 bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm border border-gray-200 dark:border-gray-700 rounded-full shadow-sm"
                                                     >
-                                                      <ChevronDown className="h-4 w-4" />
+                                                      <ChevronUp className="h-4 w-4" />
                                                     </Button>
                                                     <FinancialChart
-                                                      key={`${callId}-chart`}
-                                                      config={part.output}
-                                                      className="mt-2"
+                                                      {...part.output}
                                                     />
                                                   </div>
                                                 ) : (
                                                   <div className="bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 rounded-xl p-4">
                                                     <div className="flex items-center justify-between mb-2">
                                                       <div className="flex items-center gap-2 text-gray-700 dark:text-gray-300">
-                                                        <span className="text-lg">📈</span>
-                                                        <span className="font-medium">{part.output.title}</span>
+                                                        <span className="text-lg">
+                                                          📈
+                                                        </span>
+                                                        <span className="font-medium">
+                                                          {part.output.title}
+                                                        </span>
                                                       </div>
                                                       <Button
                                                         variant="ghost"
                                                         size="sm"
-                                                        onClick={() => toggleChartExpansion(callId)}
+                                                        onClick={() =>
+                                                          toggleChartExpansion(
+                                                            callId
+                                                          )
+                                                        }
                                                         className="h-6 w-6 p-0 text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
-                                                        title="Expand chart"
                                                       >
                                                         <ChevronDown className="h-4 w-4" />
                                                       </Button>
                                                     </div>
                                                     <div className="text-sm text-gray-500 dark:text-gray-400 space-y-1">
-                                                      <div>Chart Type: {part.output.chartType}</div>
                                                       <div>
-                                                        Data Series: {part.output.dataSeries?.length || 0}
+                                                        Chart Type:{" "}
+                                                        {part.output.chartType}
                                                       </div>
-                                                      {part.output.description && (
-                                                        <div className="text-xs">{part.output.description}</div>
+                                                      <div>
+                                                        Data Series:{" "}
+                                                        {part.output.dataSeries
+                                                          ?.length || 0}
+                                                      </div>
+                                                      {part.output
+                                                        .description && (
+                                                        <div className="text-xs">
+                                                          {
+                                                            part.output
+                                                              .description
+                                                          }
+                                                        </div>
                                                       )}
                                                     </div>
                                                     <div className="text-center mt-3">
                                                       <button
-                                                        onClick={() => toggleChartExpansion(callId)}
+                                                        onClick={() =>
+                                                          toggleChartExpansion(
+                                                            callId
+                                                          )
+                                                        }
                                                         className="text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-200 underline"
                                                       >
                                                         View Chart
@@ -5004,7 +5112,9 @@ export function ChatInterface({
                                               >
                                                 <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
                                                   <AlertCircle className="h-4 w-4" />
-                                                  <span className="font-medium">Chart Creation Error</span>
+                                                  <span className="font-medium">
+                                                    Chart Creation Error
+                                                  </span>
                                                 </div>
                                                 <div className="text-sm text-red-600 dark:text-red-300">
                                                   {part.errorText}
@@ -5015,7 +5125,6 @@ export function ChatInterface({
                                         break;
                                       }
 
-
                                       // Document extraction tools
                                       case "tool-readTextFromUrl":
                                       case "tool-parsePdfFromUrl":
@@ -5023,19 +5132,35 @@ export function ChatInterface({
                                         const callId = part.toolCallId;
                                         const meta =
                                           part.type === "tool-parsePdfFromUrl"
-                                            ? { emoji: "📄", title: "PDF Text Extraction" }
-                                            : part.type === "tool-parseDocxFromUrl"
-                                            ? { emoji: "📝", title: "DOCX Text Extraction" }
-                                            : { emoji: "🔗", title: "Remote Text Fetch" };
+                                            ? {
+                                                emoji: "📄",
+                                                title: "PDF Text Extraction",
+                                              }
+                                            : part.type ===
+                                              "tool-parseDocxFromUrl"
+                                            ? {
+                                                emoji: "📝",
+                                                title: "DOCX Text Extraction",
+                                              }
+                                            : {
+                                                emoji: "🔗",
+                                                title: "Remote Text Fetch",
+                                              };
 
-                                        const renderLoading = (message: string) => (
+                                        const renderLoading = (
+                                          message: string
+                                        ) => (
                                           <div
                                             key={callId}
                                             className="mt-2 bg-gray-50 dark:bg-gray-900/20 border border-gray-200 dark:border-gray-700 rounded p-2 sm:p-3"
                                           >
                                             <div className="flex items-center gap-2 text-gray-700 dark:text-gray-300 mb-1.5">
-                                              <span className="text-lg">{meta.emoji}</span>
-                                              <span className="font-medium">{meta.title}</span>
+                                              <span className="text-lg">
+                                                {meta.emoji}
+                                              </span>
+                                              <span className="font-medium">
+                                                {meta.title}
+                                              </span>
                                               <Clock className="h-3 w-3 animate-spin" />
                                             </div>
                                             <div className="text-xs text-gray-600 dark:text-gray-400">
@@ -5046,14 +5171,22 @@ export function ChatInterface({
 
                                         switch (part.state) {
                                           case "input-streaming":
-                                            return renderLoading("Preparing content...");
+                                            return renderLoading(
+                                              "Preparing content..."
+                                            );
                                           case "input-available":
-                                            return renderLoading("Downloading source content...");
+                                            return renderLoading(
+                                              "Downloading source content..."
+                                            );
                                           case "output-available": {
                                             const rawOutput =
                                               typeof part.output === "string"
                                                 ? part.output
-                                                : JSON.stringify(part.output, null, 2);
+                                                : JSON.stringify(
+                                                    part.output,
+                                                    null,
+                                                    2
+                                                  );
                                             const snippet =
                                               rawOutput.length > 400
                                                 ? `${rawOutput.slice(0, 400)}…`
@@ -5061,7 +5194,12 @@ export function ChatInterface({
                                             const sourceHost = (() => {
                                               try {
                                                 return part.input?.url
-                                                  ? new URL(part.input.url).hostname.replace(/^www\./, "")
+                                                  ? new URL(
+                                                      part.input.url
+                                                    ).hostname.replace(
+                                                      /^www\./,
+                                                      ""
+                                                    )
                                                   : "Document";
                                               } catch {
                                                 return "Document";
@@ -5072,7 +5210,9 @@ export function ChatInterface({
                                               {
                                                 id: `${callId}-document`,
                                                 title: meta.title,
-                                                summary: snippet || "Content retrieved successfully.",
+                                                summary:
+                                                  snippet ||
+                                                  "Content retrieved successfully.",
                                                 source: sourceHost,
                                                 url: part.input?.url,
                                                 fullContent: rawOutput,
@@ -5091,17 +5231,26 @@ export function ChatInterface({
                                               >
                                                 <div className="flex items-center justify-between gap-2 mb-2">
                                                   <div className="flex items-center gap-2 text-gray-700 dark:text-gray-300">
-                                                    <span className="text-lg">{meta.emoji}</span>
-                                                    <span className="font-medium">{meta.title} Result</span>
+                                                    <span className="text-lg">
+                                                      {meta.emoji}
+                                                    </span>
+                                                    <span className="font-medium">
+                                                      {meta.title} Result
+                                                    </span>
                                                   </div>
                                                   <Button
                                                     variant="ghost"
                                                     size="sm"
                                                     onClick={async () => {
                                                       try {
-                                                        await navigator.clipboard.writeText(rawOutput);
+                                                        await navigator.clipboard.writeText(
+                                                          rawOutput
+                                                        );
                                                       } catch (error) {
-                                                        console.error("[Chat Interface] Failed to copy extracted text:", error);
+                                                        console.error(
+                                                          "[Chat Interface] Failed to copy extracted text:",
+                                                          error
+                                                        );
                                                       }
                                                     }}
                                                     className="h-7 w-7 p-0 text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
@@ -5127,7 +5276,9 @@ export function ChatInterface({
                                               >
                                                 <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
                                                   <AlertCircle className="h-4 w-4" />
-                                                  <span className="font-medium">{meta.title} Error</span>
+                                                  <span className="font-medium">
+                                                    {meta.title} Error
+                                                  </span>
                                                 </div>
                                                 <div className="text-sm text-red-600 dark:text-red-300">
                                                   {part.errorText}
@@ -5156,15 +5307,24 @@ export function ChatInterface({
                                                     💹
                                                   </span>
                                                   <span className="font-medium">
-                                                    {part.type === "tool-getFREDSeriesData" && "Searching FRED Series"}
-                                                    {part.type === "tool-getBLSSeriesData" && "Searching BLS Series"}
-                                                    {part.type === "tool-getWBDetails" && "Searching World Bank Data"}
-                                                    {part.type === "tool-getUSASpendingDetails" && "Fetching USAspending Data"}
+                                                    {part.type ===
+                                                      "tool-getFREDSeriesData" &&
+                                                      "Searching FRED Series"}
+                                                    {part.type ===
+                                                      "tool-getBLSSeriesData" &&
+                                                      "Searching BLS Series"}
+                                                    {part.type ===
+                                                      "tool-getWBDetails" &&
+                                                      "Searching World Bank Data"}
+                                                    {part.type ===
+                                                      "tool-getUSASpendingDetails" &&
+                                                      "Fetching USAspending Data"}
                                                   </span>
                                                   <Clock className="h-3 w-3 animate-spin" />
                                                 </div>
                                                 <div className="text-sm text-yellow-600 dark:text-yellow-300">
-                                                  Searching economic databases...
+                                                  Searching economic
+                                                  databases...
                                                 </div>
                                               </div>
                                             );
@@ -5179,35 +5339,60 @@ export function ChatInterface({
                                                     💹
                                                   </span>
                                                   <span className="font-medium">
-                                                    {part.type === "tool-getFREDSeriesData" && "Searching FRED Series"}
-                                                    {part.type === "tool-getBLSSeriesData" && "Searching BLS Series"}
-                                                    {part.type === "tool-getWBDetails" && "Searching World Bank Data"}
-                                                    {part.type === "tool-getUSASpendingDetails" && "Fetching USAspending Data"}
+                                                    {part.type ===
+                                                      "tool-getFREDSeriesData" &&
+                                                      "Searching FRED Series"}
+                                                    {part.type ===
+                                                      "tool-getBLSSeriesData" &&
+                                                      "Searching BLS Series"}
+                                                    {part.type ===
+                                                      "tool-getWBDetails" &&
+                                                      "Searching World Bank Data"}
+                                                    {part.type ===
+                                                      "tool-getUSASpendingDetails" &&
+                                                      "Fetching USAspending Data"}
                                                   </span>
                                                   <Clock className="h-3 w-3 animate-spin" />
                                                 </div>
                                                 <div className="text-sm text-yellow-600 dark:text-yellow-300">
                                                   <div className="bg-yellow-100 dark:bg-yellow-800/30 p-2 rounded">
                                                     <div className="font-mono text-xs">
-                                                      {"query" in part.input || "seriesId" in part.input ? (
+                                                      {"query" in part.input ||
+                                                      "seriesId" in
+                                                        part.input ? (
                                                         <>
-                                                          Query: &quot;{part.input.query || part.input.seriesId || "N/A"}&quot;
-                                                          {"maxResults" in part.input && part.input.maxResults && (
-                                                            <>
-                                                              <br />
-                                                              Max Results: {part.input.maxResults}
-                                                            </>
-                                                          )}
+                                                          Query: &quot;
+                                                          {part.input.query ||
+                                                            part.input
+                                                              .seriesId ||
+                                                            "N/A"}
+                                                          &quot;
+                                                          {"maxResults" in
+                                                            part.input &&
+                                                            part.input
+                                                              .maxResults && (
+                                                              <>
+                                                                <br />
+                                                                Max Results:{" "}
+                                                                {
+                                                                  part.input
+                                                                    .maxResults
+                                                                }
+                                                              </>
+                                                            )}
                                                         </>
                                                       ) : (
                                                         <>
-                                                          {JSON.stringify(part.input)}
+                                                          {JSON.stringify(
+                                                            part.input
+                                                          )}
                                                         </>
                                                       )}
                                                     </div>
                                                   </div>
                                                   <div className="mt-2 text-xs">
-                                                    Retrieving economic data from specialized sources...
+                                                    Retrieving economic data
+                                                    from specialized sources...
                                                   </div>
                                                 </div>
                                               </div>
@@ -5215,29 +5400,52 @@ export function ChatInterface({
                                           case "output-available": {
                                             // Parse output results for economic tools and gracefully display raw content when structured parsing fails
                                             let economicResults: any[] = [];
-                                            let fallbackContent: string | null = null;
+                                            let fallbackContent: string | null =
+                                              null;
 
-                                            const ensureString = (value: any) => {
-                                              if (value === null || value === undefined) return "";
+                                            const ensureString = (
+                                              value: any
+                                            ) => {
+                                              if (
+                                                value === null ||
+                                                value === undefined
+                                              )
+                                                return "";
                                               return typeof value === "string"
                                                 ? value
                                                 : (() => {
                                                     try {
-                                                      return JSON.stringify(value, null, 2);
+                                                      return JSON.stringify(
+                                                        value,
+                                                        null,
+                                                        2
+                                                      );
                                                     } catch {
                                                       return String(value);
                                                     }
                                                   })();
                                             };
 
-                                            const tryParseNestedJSON = (value: string, maxDepth = 4): any => {
-                                              if (typeof value !== "string") return null;
+                                            const tryParseNestedJSON = (
+                                              value: string,
+                                              maxDepth = 4
+                                            ): any => {
+                                              if (typeof value !== "string")
+                                                return null;
                                               let current: any = value;
-                                              for (let attempt = 0; attempt < maxDepth; attempt++) {
+                                              for (
+                                                let attempt = 0;
+                                                attempt < maxDepth;
+                                                attempt++
+                                              ) {
                                                 const trimmed =
-                                                  typeof current === "string" ? current.trim() : current;
+                                                  typeof current === "string"
+                                                    ? current.trim()
+                                                    : current;
 
-                                                if (typeof trimmed !== "string") {
+                                                if (
+                                                  typeof trimmed !== "string"
+                                                ) {
                                                   return trimmed;
                                                 }
 
@@ -5245,8 +5453,11 @@ export function ChatInterface({
 
                                                 // Attempt direct JSON.parse
                                                 try {
-                                                  const parsed = JSON.parse(trimmed);
-                                                  if (typeof parsed === "string") {
+                                                  const parsed =
+                                                    JSON.parse(trimmed);
+                                                  if (
+                                                    typeof parsed === "string"
+                                                  ) {
                                                     current = parsed;
                                                     continue;
                                                   }
@@ -5254,10 +5465,15 @@ export function ChatInterface({
                                                 } catch {
                                                   // Remove wrapping quotes if present and try again
                                                   if (
-                                                    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-                                                    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+                                                    (trimmed.startsWith('"') &&
+                                                      trimmed.endsWith('"')) ||
+                                                    (trimmed.startsWith("'") &&
+                                                      trimmed.endsWith("'"))
                                                   ) {
-                                                    current = trimmed.slice(1, -1);
+                                                    current = trimmed.slice(
+                                                      1,
+                                                      -1
+                                                    );
                                                     continue;
                                                   }
 
@@ -5279,14 +5495,20 @@ export function ChatInterface({
                                               return null;
                                             };
 
-                                            const buildSeriesUrl = (meta: any) => {
-                                              if (meta?.url && typeof meta.url === "string") {
+                                            const buildSeriesUrl = (
+                                              meta: any
+                                            ) => {
+                                              if (
+                                                meta?.url &&
+                                                typeof meta.url === "string"
+                                              ) {
                                                 return meta.url;
                                               }
                                               const seriesId =
                                                 meta?.seriesId ||
                                                 meta?.series_id ||
-                                                (typeof part.input === "object" &&
+                                                (typeof part.input ===
+                                                  "object" &&
                                                 part.input !== null &&
                                                 "seriesId" in part.input
                                                   ? (part.input as any).seriesId
@@ -5300,8 +5522,14 @@ export function ChatInterface({
                                               return "https://valyu.ai";
                                             };
 
-                                            const buildSeriesResult = (values: any[], meta: any) => {
-                                              if (!Array.isArray(values) || values.length === 0) {
+                                            const buildSeriesResult = (
+                                              values: any[],
+                                              meta: any
+                                            ) => {
+                                              if (
+                                                !Array.isArray(values) ||
+                                                values.length === 0
+                                              ) {
                                                 return null;
                                               }
 
@@ -5314,13 +5542,21 @@ export function ChatInterface({
                                                 null;
 
                                               const firstEntry =
-                                                values.find((item: any) => pickLabel(item)) || values[0];
+                                                values.find((item: any) =>
+                                                  pickLabel(item)
+                                                ) || values[0];
                                               const lastEntry =
-                                                [...values].reverse().find((item: any) => pickLabel(item)) ||
+                                                [...values]
+                                                  .reverse()
+                                                  .find((item: any) =>
+                                                    pickLabel(item)
+                                                  ) ||
                                                 values[values.length - 1];
 
-                                              const firstLabel = pickLabel(firstEntry);
-                                              const lastLabel = pickLabel(lastEntry);
+                                              const firstLabel =
+                                                pickLabel(firstEntry);
+                                              const lastLabel =
+                                                pickLabel(lastEntry);
 
                                               const candidateTitle =
                                                 meta?.title ||
@@ -5329,23 +5565,35 @@ export function ChatInterface({
                                                 meta?.seriesTitle ||
                                                 meta?.series_id ||
                                                 meta?.seriesId ||
-                                                (typeof part.input === "object" &&
+                                                (typeof part.input ===
+                                                  "object" &&
                                                 part.input !== null &&
                                                 "seriesId" in part.input
                                                   ? (part.input as any).seriesId
                                                   : undefined) ||
-                                                (typeof part.input === "object" &&
+                                                (typeof part.input ===
+                                                  "object" &&
                                                 part.input !== null &&
                                                 "query" in part.input
                                                   ? (part.input as any).query
                                                   : undefined) ||
                                                 "Economic Series";
 
-                                              const summaryPieces: string[] = [];
-                                              if (meta?.note) summaryPieces.push(meta.note);
-                                              summaryPieces.push(`${values.length} data points`);
-                                              if (firstLabel && lastLabel && firstLabel !== lastLabel) {
-                                                summaryPieces.push(`${firstLabel} → ${lastLabel}`);
+                                              const summaryPieces: string[] =
+                                                [];
+                                              if (meta?.note)
+                                                summaryPieces.push(meta.note);
+                                              summaryPieces.push(
+                                                `${values.length} data points`
+                                              );
+                                              if (
+                                                firstLabel &&
+                                                lastLabel &&
+                                                firstLabel !== lastLabel
+                                              ) {
+                                                summaryPieces.push(
+                                                  `${firstLabel} → ${lastLabel}`
+                                                );
                                               }
 
                                               const metadata = {
@@ -5355,12 +5603,15 @@ export function ChatInterface({
                                                 seriesId:
                                                   meta?.seriesId ||
                                                   meta?.series_id ||
-                                                  (typeof part.input === "object" &&
+                                                  (typeof part.input ===
+                                                    "object" &&
                                                   part.input !== null &&
                                                   "seriesId" in part.input
-                                                    ? (part.input as any).seriesId
+                                                    ? (part.input as any)
+                                                        .seriesId
                                                     : undefined),
-                                                units: meta?.units || meta?.unit,
+                                                units:
+                                                  meta?.units || meta?.unit,
                                                 frequency: meta?.frequency,
                                               };
 
@@ -5372,7 +5623,8 @@ export function ChatInterface({
                                                   part.toolCallId ||
                                                   `economic-${callId}`,
                                                 title: candidateTitle,
-                                                summary: summaryPieces.join(" • "),
+                                                summary:
+                                                  summaryPieces.join(" • "),
                                                 dataType: "time-series",
                                                 isStructured: true,
                                                 fullContent: {
@@ -5385,19 +5637,36 @@ export function ChatInterface({
                                             };
 
                                             let parsed: any = null;
-                                            if (typeof part.output === "string") {
+                                            if (
+                                              typeof part.output === "string"
+                                            ) {
                                               try {
-                                                parsed = JSON.parse(part.output);
+                                                parsed = JSON.parse(
+                                                  part.output
+                                                );
                                               } catch {
-                                                fallbackContent = ensureString(part.output);
+                                                fallbackContent = ensureString(
+                                                  part.output
+                                                );
                                               }
-                                            } else if (part.output && typeof part.output === "object") {
+                                            } else if (
+                                              part.output &&
+                                              typeof part.output === "object"
+                                            ) {
                                               parsed = part.output;
-                                            } else if (part.output !== null && part.output !== undefined) {
-                                              fallbackContent = ensureString(part.output);
+                                            } else if (
+                                              part.output !== null &&
+                                              part.output !== undefined
+                                            ) {
+                                              fallbackContent = ensureString(
+                                                part.output
+                                              );
                                             }
 
-                                            if (parsed && typeof parsed === "object") {
+                                            if (
+                                              parsed &&
+                                              typeof parsed === "object"
+                                            ) {
                                               const candidateArrays = [
                                                 parsed.results,
                                                 parsed.data,
@@ -5413,17 +5682,29 @@ export function ChatInterface({
                                               ];
 
                                               const isSeriesTool =
-                                                part.type === "tool-getFREDSeriesData" ||
-                                                part.type === "tool-getBLSSeriesData" ||
-                                                part.type === "tool-getUSASpendingDetails";
+                                                part.type ===
+                                                  "tool-getFREDSeriesData" ||
+                                                part.type ===
+                                                  "tool-getBLSSeriesData" ||
+                                                part.type ===
+                                                  "tool-getUSASpendingDetails";
 
                                               let handled = false;
                                               for (const candidate of candidateArrays) {
-                                                if (Array.isArray(candidate) && candidate.length > 0) {
+                                                if (
+                                                  Array.isArray(candidate) &&
+                                                  candidate.length > 0
+                                                ) {
                                                   if (isSeriesTool) {
-                                                    const seriesResult = buildSeriesResult(candidate, parsed);
+                                                    const seriesResult =
+                                                      buildSeriesResult(
+                                                        candidate,
+                                                        parsed
+                                                      );
                                                     if (seriesResult) {
-                                                      economicResults = [seriesResult];
+                                                      economicResults = [
+                                                        seriesResult,
+                                                      ];
                                                       handled = true;
                                                       break;
                                                     }
@@ -5434,7 +5715,11 @@ export function ChatInterface({
                                                 }
                                               }
 
-                                              if (!handled && parsed.data && typeof parsed.data === "object") {
+                                              if (
+                                                !handled &&
+                                                parsed.data &&
+                                                typeof parsed.data === "object"
+                                              ) {
                                                 const dataPayload = parsed.data;
                                                 const innerArrays = [
                                                   dataPayload.values,
@@ -5442,18 +5727,30 @@ export function ChatInterface({
                                                   dataPayload.data,
                                                   dataPayload.results,
                                                 ];
-                                                const innerArray = innerArrays.find(
-                                                  (candidate: any) =>
-                                                    Array.isArray(candidate) && candidate.length > 0
-                                                );
+                                                const innerArray =
+                                                  innerArrays.find(
+                                                    (candidate: any) =>
+                                                      Array.isArray(
+                                                        candidate
+                                                      ) && candidate.length > 0
+                                                  );
 
-                                                if (innerArray && isSeriesTool) {
-                                                  const seriesResult = buildSeriesResult(innerArray, {
-                                                    ...parsed,
-                                                    ...dataPayload,
-                                                  });
+                                                if (
+                                                  innerArray &&
+                                                  isSeriesTool
+                                                ) {
+                                                  const seriesResult =
+                                                    buildSeriesResult(
+                                                      innerArray,
+                                                      {
+                                                        ...parsed,
+                                                        ...dataPayload,
+                                                      }
+                                                    );
                                                   if (seriesResult) {
-                                                    economicResults = [seriesResult];
+                                                    economicResults = [
+                                                      seriesResult,
+                                                    ];
                                                     handled = true;
                                                   }
                                                 }
@@ -5469,20 +5766,26 @@ export function ChatInterface({
                                                         `economic-${callId}`,
                                                       title:
                                                         parsed.title ||
-                                                        (typeof part.input === "object" &&
+                                                        (typeof part.input ===
+                                                          "object" &&
                                                         part.input !== null &&
                                                         "query" in part.input
-                                                          ? (part.input as any).query
+                                                          ? (part.input as any)
+                                                              .query
                                                           : "Economic Data"),
                                                       summary:
                                                         parsed.note ||
                                                         `Structured response with ${
-                                                          Object.keys(dataPayload).length
+                                                          Object.keys(
+                                                            dataPayload
+                                                          ).length
                                                         } fields`,
                                                       dataType: "JSON",
                                                       isStructured: true,
                                                       fullContent: dataPayload,
-                                                      url: buildSeriesUrl(parsed),
+                                                      url: buildSeriesUrl(
+                                                        parsed
+                                                      ),
                                                     },
                                                   ];
                                                   handled = true;
@@ -5490,39 +5793,69 @@ export function ChatInterface({
                                               }
 
                                               if (!handled && parsed.content) {
-                                                const contentString = ensureString(parsed.content);
+                                                const contentString =
+                                                  ensureString(parsed.content);
                                                 const parsedContent =
-                                                  typeof parsed.content === "object"
+                                                  typeof parsed.content ===
+                                                  "object"
                                                     ? parsed.content
-                                                    : tryParseNestedJSON(contentString);
+                                                    : tryParseNestedJSON(
+                                                        contentString
+                                                      );
 
                                                 if (parsedContent) {
                                                   const candidateArray =
-                                                    (Array.isArray(parsedContent) && parsedContent) ||
-                                                    (Array.isArray((parsedContent as any).data) &&
-                                                      (parsedContent as any).data) ||
-                                                    (Array.isArray((parsedContent as any).values) &&
-                                                      (parsedContent as any).values);
+                                                    (Array.isArray(
+                                                      parsedContent
+                                                    ) &&
+                                                      parsedContent) ||
+                                                    (Array.isArray(
+                                                      (parsedContent as any)
+                                                        .data
+                                                    ) &&
+                                                      (parsedContent as any)
+                                                        .data) ||
+                                                    (Array.isArray(
+                                                      (parsedContent as any)
+                                                        .values
+                                                    ) &&
+                                                      (parsedContent as any)
+                                                        .values);
 
-                                                  if (candidateArray && candidateArray.length > 0) {
+                                                  if (
+                                                    candidateArray &&
+                                                    candidateArray.length > 0
+                                                  ) {
                                                     if (isSeriesTool) {
-                                                      const seriesResult = buildSeriesResult(candidateArray, {
-                                                        ...parsed,
-                                                        ...(typeof parsedContent === "object"
-                                                          ? parsedContent
-                                                          : {}),
-                                                      });
+                                                      const seriesResult =
+                                                        buildSeriesResult(
+                                                          candidateArray,
+                                                          {
+                                                            ...parsed,
+                                                            ...(typeof parsedContent ===
+                                                            "object"
+                                                              ? parsedContent
+                                                              : {}),
+                                                          }
+                                                        );
                                                       if (seriesResult) {
-                                                        economicResults = [seriesResult];
+                                                        economicResults = [
+                                                          seriesResult,
+                                                        ];
                                                         handled = true;
                                                       }
                                                     } else {
-                                                      economicResults = candidateArray;
+                                                      economicResults =
+                                                        candidateArray;
                                                       handled = true;
                                                     }
                                                   }
 
-                                                  if (!handled && typeof parsedContent === "object") {
+                                                  if (
+                                                    !handled &&
+                                                    typeof parsedContent ===
+                                                      "object"
+                                                  ) {
                                                     economicResults = [
                                                       {
                                                         id:
@@ -5535,21 +5868,31 @@ export function ChatInterface({
                                                           parsed.title ||
                                                           parsed.seriesId ||
                                                           parsed.query ||
-                                                          (typeof part.input === "object" &&
+                                                          (typeof part.input ===
+                                                            "object" &&
                                                           part.input !== null &&
                                                           "query" in part.input
-                                                            ? (part.input as any).query
+                                                            ? (
+                                                                part.input as any
+                                                              ).query
                                                             : "Economic Data"),
                                                         summary:
                                                           parsed.note ||
                                                           `Structured response with ${
-                                                            Object.keys(parsedContent as Record<string, unknown>)
-                                                              .length
+                                                            Object.keys(
+                                                              parsedContent as Record<
+                                                                string,
+                                                                unknown
+                                                              >
+                                                            ).length
                                                           } fields`,
                                                         dataType: "JSON",
                                                         isStructured: true,
-                                                        fullContent: parsedContent,
-                                                        url: buildSeriesUrl(parsed),
+                                                        fullContent:
+                                                          parsedContent,
+                                                        url: buildSeriesUrl(
+                                                          parsed
+                                                        ),
                                                       },
                                                     ];
                                                     handled = true;
@@ -5557,7 +5900,8 @@ export function ChatInterface({
                                                 }
 
                                                 if (!handled) {
-                                                  fallbackContent = contentString;
+                                                  fallbackContent =
+                                                    contentString;
                                                   economicResults = [
                                                     {
                                                       id:
@@ -5570,19 +5914,25 @@ export function ChatInterface({
                                                         parsed.title ||
                                                         parsed.seriesId ||
                                                         parsed.query ||
-                                                        (typeof part.input === "object" &&
+                                                        (typeof part.input ===
+                                                          "object" &&
                                                         part.input !== null &&
                                                         "query" in part.input
-                                                          ? (part.input as any).query
+                                                          ? (part.input as any)
+                                                              .query
                                                           : "Economic Data"),
                                                       summary:
                                                         parsed.note ||
                                                         "Raw response returned by data provider.",
                                                       dataType: "text",
                                                       isStructured: false,
-                                                      fullContent: contentString,
-                                                      url: buildSeriesUrl(parsed),
-                                                      length: contentString.length,
+                                                      fullContent:
+                                                        contentString,
+                                                      url: buildSeriesUrl(
+                                                        parsed
+                                                      ),
+                                                      length:
+                                                        contentString.length,
                                                     },
                                                   ];
                                                   handled = true;
@@ -5590,18 +5940,32 @@ export function ChatInterface({
                                               }
 
                                               if (!handled && parsed.message) {
-                                                fallbackContent = ensureString(parsed.message);
-                                              } else if (!handled && !economicResults.length) {
-                                                fallbackContent = ensureString(parsed);
+                                                fallbackContent = ensureString(
+                                                  parsed.message
+                                                );
+                                              } else if (
+                                                !handled &&
+                                                !economicResults.length
+                                              ) {
+                                                fallbackContent =
+                                                  ensureString(parsed);
                                               }
                                             }
 
-                                            if (!economicResults.length && !fallbackContent && typeof part.output === "string") {
-                                              fallbackContent = ensureString(part.output);
+                                            if (
+                                              !economicResults.length &&
+                                              !fallbackContent &&
+                                              typeof part.output === "string"
+                                            ) {
+                                              fallbackContent = ensureString(
+                                                part.output
+                                              );
                                             }
 
                                             const fallbackNode =
-                                              fallbackContent && fallbackContent.trim().length > 0 ? (
+                                              fallbackContent &&
+                                              fallbackContent.trim().length >
+                                                0 ? (
                                                 <pre className="text-xs text-yellow-800 dark:text-yellow-200 bg-yellow-100 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded p-2 max-h-64 overflow-y-auto whitespace-pre-wrap">
                                                   {fallbackContent}
                                                 </pre>
@@ -5616,21 +5980,35 @@ export function ChatInterface({
                                                   <div className="flex items-center gap-2 text-yellow-700 dark:text-yellow-400">
                                                     <CheckCircle className="h-4 w-4" />
                                                     <span className="font-medium">
-                                                      {part.type === "tool-getFREDSeriesData" && "FRED Series Results"}
-                                                      {part.type === "tool-getBLSSeriesData" && "BLS Series Results"}
-                                                      {part.type === "tool-getWBDetails" && "World Bank Data Results"}
-                                                      {part.type === "tool-getUSASpendingDetails" && "USAspending Results"}
+                                                      {part.type ===
+                                                        "tool-getFREDSeriesData" &&
+                                                        "FRED Series Results"}
+                                                      {part.type ===
+                                                        "tool-getBLSSeriesData" &&
+                                                        "BLS Series Results"}
+                                                      {part.type ===
+                                                        "tool-getWBDetails" &&
+                                                        "World Bank Data Results"}
+                                                      {part.type ===
+                                                        "tool-getUSASpendingDetails" &&
+                                                        "USAspending Results"}
                                                     </span>
                                                   </div>
                                                   {!!economicResults?.length && (
                                                     <span className="text-xs text-yellow-600 dark:text-yellow-400">
-                                                      {economicResults.length} result{economicResults.length === 1 ? "" : "s"}
+                                                      {economicResults.length}{" "}
+                                                      result
+                                                      {economicResults.length ===
+                                                      1
+                                                        ? ""
+                                                        : "s"}
                                                     </span>
                                                   )}
                                                 </div>
                                                 {part.input?.query && (
                                                   <div className="text-xs text-yellow-600 dark:text-yellow-400 bg-yellow-100 dark:bg-yellow-800/30 px-2 py-1 rounded mb-2">
-                                                    &quot;{part.input.query}&quot;
+                                                    &quot;{part.input.query}
+                                                    &quot;
                                                   </div>
                                                 )}
                                                 {economicResults.length > 0 ? (
@@ -5638,11 +6016,14 @@ export function ChatInterface({
                                                     results={economicResults}
                                                     type="economics"
                                                     toolName={
-                                                      part.type === "tool-getFREDSeriesData"
+                                                      part.type ===
+                                                      "tool-getFREDSeriesData"
                                                         ? "getFREDSeriesData"
-                                                        : part.type === "tool-getBLSSeriesData"
+                                                        : part.type ===
+                                                          "tool-getBLSSeriesData"
                                                         ? "getBLSSeriesData"
-                                                        : part.type === "tool-getWBDetails"
+                                                        : part.type ===
+                                                          "tool-getWBDetails"
                                                         ? "getWBDetails"
                                                         : "getUSASpendingDetails"
                                                     }

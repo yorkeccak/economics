@@ -135,11 +135,6 @@ export async function POST(req: Request) {
         if (part && typeof part === "object") {
           const normalizedPart: Record<string, any> = { ...part };
 
-          // Drop any server-provided ids to avoid duplicate item errors when reusing history
-          if ("id" in normalizedPart) {
-            delete normalizedPart.id;
-          }
-
           if ("image" in normalizedPart) {
             normalizedPart.image = reviveBufferLike(normalizedPart.image);
           }
@@ -495,97 +490,6 @@ export async function POST(req: Request) {
       console.log("[Chat API] Using empty array as fallback");
     }
 
-    // Truncate message history to keep only recent messages and stay within context limits
-    const MAX_CONTEXT_CHARS = 80000; // Conservative limit for total context
-    const MAX_MESSAGES_TO_KEEP = 20; // Keep at most 20 messages
-
-    const getMessageSize = (message: ModelMessage): number => {
-      const content = message.content;
-      if (typeof content === "string") {
-        return content.length;
-      } else if (Array.isArray(content)) {
-        return content.reduce((partSize, part) => {
-          if (part.type === "text" && typeof part.text === "string") {
-            return partSize + part.text.length;
-          }
-          return partSize;
-        }, 0);
-      }
-      return 0;
-    };
-
-    // Calculate total size
-    let totalMessageSize = convertedMessages.reduce((size, message) => {
-      return size + getMessageSize(message);
-    }, 0);
-
-    console.log(
-      `[Chat API] Initial total message size: ${totalMessageSize} characters (${convertedMessages.length} messages)`
-    );
-
-    // Truncate messages if needed - keep first message (system) and recent messages
-    let truncatedMessages = convertedMessages;
-
-    if (
-      totalMessageSize > MAX_CONTEXT_CHARS ||
-      convertedMessages.length > MAX_MESSAGES_TO_KEEP
-    ) {
-      const firstMessage = convertedMessages[0]; // Keep system/first message
-      const recentMessages = convertedMessages.slice(1); // Get all other messages
-
-      // Start from the end and work backwards, keeping messages that fit
-      const keptMessages: ModelMessage[] = [];
-      let currentSize = getMessageSize(firstMessage);
-
-      // Always keep the last message (current user query)
-      for (let i = recentMessages.length - 1; i >= 0; i--) {
-        const messageSize = getMessageSize(recentMessages[i]);
-
-        // Keep message if we're under the limit and under max message count
-        if (
-          currentSize + messageSize <= MAX_CONTEXT_CHARS &&
-          keptMessages.length < MAX_MESSAGES_TO_KEEP - 1
-        ) {
-          keptMessages.unshift(recentMessages[i]);
-          currentSize += messageSize;
-        } else if (i === recentMessages.length - 1) {
-          // Always keep the last message even if it's large
-          keptMessages.unshift(recentMessages[i]);
-          currentSize += messageSize;
-          break;
-        }
-      }
-
-      truncatedMessages = [firstMessage, ...keptMessages];
-      totalMessageSize = currentSize;
-
-      console.log(
-        `[Chat API] Truncated messages: ${convertedMessages.length} -> ${truncatedMessages.length} messages, ${totalMessageSize} characters`
-      );
-    }
-
-    // Final check - if still too large, return error
-    if (totalMessageSize > MAX_CONTEXT_CHARS * 1.5) {
-      console.warn(
-        `[Chat API] Message too large even after truncation: ${totalMessageSize} characters`
-      );
-      return new Response(
-        JSON.stringify({
-          error: "CONTEXT_TOO_LARGE",
-          message:
-            "Your message and context are too large for the AI model. Please try with fewer context items or a shorter message.",
-          details: `Message size: ${totalMessageSize} characters (limit: ${MAX_CONTEXT_CHARS})`,
-        }),
-        {
-          status: 413,
-          headers: { "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    // Use truncated messages
-    convertedMessages = truncatedMessages;
-
     const result = streamText({
       model: selectedModel as any,
       messages: convertedMessages,
@@ -603,9 +507,6 @@ export async function POST(req: Request) {
           reasoningSummary: "auto",
           include: ["reasoning.encrypted_content"],
         },
-      },
-      onFinish: ({ finishReason, usage }) => {
-        console.log("[Chat API] Stream finished:", { finishReason, usage });
       },
       system: `You are a specialized AI assistant with access to comprehensive tools for economics, finance, data analysis, Python code execution, and data visualization.
       
@@ -712,31 +613,24 @@ export async function POST(req: Request) {
          - If the user asks for calculations with Python, USE THE TOOL, don't just show code
          - Mathematical formulas should be explained with LaTeX, but calculations MUST use codeExecution
          
-        CRITICAL PYTHON CODE REQUIREMENTS:
-        🚨 CODE LENGTH GUIDANCE: Keep your Python code concise so it runs reliably in the Daytona sandbox. Extremely long scripts can hit execution limits or time out, so split complex workflows into smaller steps when possible.
-        
-        1. Keep code focused and streamlined. Break multi-stage analyses into separate runs if they start getting unwieldy.
-        2. ALWAYS include print() statements - Python code without print() produces no visible output
-        3. Use descriptive labels and proper formatting in your print statements
-        4. Include units, currency symbols, percentages where appropriate
-        5. Show step-by-step calculations for complex problems
-        6. Use f-string formatting for professional output
-        7. Always calculate intermediate values before printing final results
-        8. Available libraries: You may install and use packages in the Daytona sandbox (e.g., numpy, pandas, scikit-learn). Prefer the chart creation tool for visuals unless an advanced/custom visualization is required.
-        9. Visualization guidance: Prefer the chart creation tool for most charts. Use Daytona-rendered plots only for complex, bespoke visualizations that the chart tool cannot represent.
-        
-        REQUIRED: Every Python script must end with print() statements that show the calculated results with proper labels, units, and formatting. Never just write variable names or expressions without print() - they will not display anything to the user.
-        If generating advanced charts with Daytona (e.g., matplotlib), ensure the code renders the figure (e.g., plt.show()) so artifacts can be captured.
-        
-        ⚠️ REMEMBER: If you encounter sandbox timeouts or resource limits, simplify the script or execute the workflow in smaller chunks.
+         CRITICAL PYTHON CODE REQUIREMENTS:
+         1. ALWAYS include print() statements - Python code without print() produces no visible output
+         2. Use descriptive labels and proper formatting in your print statements
+         3. Include units, currency symbols, percentages where appropriate
+         4. Show step-by-step calculations for complex problems
+         5. Use f-string formatting for professional output
+         6. Always calculate intermediate values before printing final results
+          7. Available libraries: You may install and use packages in the Daytona sandbox (e.g., numpy, pandas, scikit-learn). Prefer the chart creation tool for visuals unless an advanced/custom visualization is required.
+          8. Visualization guidance: Prefer the chart creation tool for most charts. Use Daytona-rendered plots only for complex, bespoke visualizations that the chart tool cannot represent.
+         
+          REQUIRED: Every Python script must end with print() statements that show the calculated results with proper labels, units, and formatting. Never just write variable names or expressions without print() - they will not display anything to the user.
+          If generating advanced charts with Daytona (e.g., matplotlib), ensure the code renders the figure (e.g., plt.show()) so artifacts can be captured.
          
          ERROR RECOVERY: If any tool call fails due to validation errors, you will receive an error message explaining what went wrong. When this happens:
          1. Read the error message carefully to understand what fields are missing or incorrect
          2. Correct the tool call by providing ALL required fields with proper values
          3. For createChart errors, ensure you provide: title, type, xAxisLabel, yAxisLabel, and dataSeries
-         4. For codeExecution tool errors:
-            - Ensure your code includes proper print() statements
-            - If the sandbox reports a timeout or resource/size issue, simplify code or break into smaller pieces
+         4. For codeExecution tool errors, ensure your code includes proper print() statements
          5. Try the corrected tool call immediately - don't ask the user for clarification
          6. If multiple fields are missing, fix ALL of them in your retry attempt
          
@@ -775,9 +669,6 @@ export async function POST(req: Request) {
       - If you realize you need to correct a previous tool call, immediately issue the correct tool call.
       - If the user asks for multiple items (e.g., multiple companies), you must call the tool for each and only finish when all are processed and summarized.
       - Always continue until you have completed all required tool calls and provided a summary or visualization if appropriate.
-      - 🚨 CRITICAL: After ALL tool calls are complete, you MUST provide a comprehensive text response. NEVER end without text analysis.
-      - After creating charts, you are NOT done - you MUST follow with detailed written analysis explaining the results.
-      - 🚨 YOUR FINAL STEP MUST ALWAYS BE TEXT GENERATION, NEVER TOOL CALLS. End every response with a comprehensive written analysis.
       - NEVER just show Python code as text - if the user wants calculations or Python code, you MUST use the codeExecution tool to run it
       - When users say "calculate", "compute", or mention Python code, this is a COMMAND to use the codeExecution tool, not a request to see code
       - NEVER suggest using Python to fetch data from the internet or APIs. All data retrieval must be done via the economicsSearch or webSearch tools.
@@ -785,11 +676,8 @@ export async function POST(req: Request) {
       
       CRITICAL WORKFLOW ORDER:
       1. First: Complete ALL data gathering (searches, calculations, etc.)
-      2. Then: Create ALL charts/visualizations based on the gathered data  
-      3. Finally: ALWAYS provide a comprehensive text response analyzing the data and charts
-      4. YOUR RESPONSE MUST END WITH TEXT, NOT TOOL CALLS
-      
-      IMPORTANT: After creating charts, you MUST provide textual analysis. Never end your response with just a chart - always follow up with written insights, explanations, and conclusions. The conversation MUST end with you providing text to the user, not with tool execution.
+      2. Then: Create ALL charts/visualizations based on the gathered data
+      3. Finally: Present your final formatted response with analysis
       
       This ensures charts appear immediately before your analysis and are not lost among tool calls.
       ---
@@ -829,8 +717,7 @@ export async function POST(req: Request) {
          - Create ALL charts IMMEDIATELY BEFORE your final response text
          - First complete all data gathering and analysis tool calls
          - Then create all necessary charts
-         - Finally ALWAYS present your comprehensive analysis with references to the charts
-         - NEVER end your response with just a chart - text analysis is REQUIRED after charts
+         - Finally present your comprehensive analysis with references to the charts
          - This ensures charts are visible and not buried among tool calls
 
       6. **Visual Hierarchy:**
@@ -959,37 +846,6 @@ export async function POST(req: Request) {
     return streamResponse;
   } catch (error) {
     console.error("Chat API error:", error);
-
-    // Handle specific context length exceeded errors
-    if (error && typeof error === "object") {
-      // Check for error.message or error.error.message or error.error.code
-      const errorObj = error as any;
-      const errorMessage = errorObj.message || errorObj.error?.message || "";
-      const errorCode = errorObj.code || errorObj.error?.code || "";
-
-      if (
-        errorMessage.includes("context_length_exceeded") ||
-        errorCode === "context_length_exceeded" ||
-        errorMessage.includes("context window") ||
-        errorMessage.includes("exceeds the context")
-      ) {
-        console.warn("[Chat API] Context length exceeded error detected");
-        return new Response(
-          JSON.stringify({
-            error: "CONTEXT_LENGTH_EXCEEDED",
-            message:
-              "Your message and context exceed the AI model's context window. Please try starting a new chat or reducing the amount of context items.",
-            details:
-              "The input exceeds the context window of this model. Please adjust your input and try again.",
-          }),
-          {
-            status: 413,
-            headers: { "Content-Type": "application/json" },
-          }
-        );
-      }
-    }
-
     return new Response(JSON.stringify({ error: "Internal server error" }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
@@ -1055,7 +911,8 @@ async function saveMessageToSession(
     const existingTokenUsageSource =
       typeof message.token_usage === "object" && message.token_usage !== null
         ? message.token_usage
-        : typeof message.tokenUsage === "object" && message.tokenUsage !== null
+        : typeof message.tokenUsage === "object" &&
+          message.tokenUsage !== null
         ? message.tokenUsage
         : null;
 

@@ -162,6 +162,58 @@ function extractDoi(s?: string) {
   return m?.[0]?.toLowerCase();
 }
 
+function parseApiContent(content: unknown, maxDepth = 4): any {
+  if (typeof content !== "string") {
+    return content;
+  }
+
+  let current: any = content;
+  for (let attempt = 0; attempt < maxDepth; attempt++) {
+    const trimmed = typeof current === "string" ? current.trim() : current;
+
+    if (typeof trimmed !== "string") {
+      return trimmed;
+    }
+
+    if (!trimmed) {
+      return "";
+    }
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed === "string") {
+        current = parsed;
+        continue;
+      }
+      return parsed;
+    } catch {
+      const hasWrappingQuotes =
+        (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+        (trimmed.startsWith("'") && trimmed.endsWith("'"));
+
+      if (hasWrappingQuotes) {
+        current = trimmed.slice(1, -1);
+        continue;
+      }
+
+      const unescaped = trimmed
+        .replace(/\\"/g, '"')
+        .replace(/\\n/g, "\n")
+        .replace(/\\r/g, "\r")
+        .replace(/\\t/g, "\t");
+
+      if (unescaped !== trimmed) {
+        current = unescaped;
+        continue;
+      }
+
+      break;
+    }
+  }
+
+  return current;
+}
+
 function resultId(r: any) {
   const key =
     r.nct_id ||
@@ -1132,127 +1184,113 @@ ${execution.result || "(No output produced)"}
       const userTier = (options as any)?.experimental_context?.userTier;
       const isDevelopment = process.env.NEXT_PUBLIC_APP_MODE === "development";
 
-      try {
-        // Check if Valyu API key is available
-        const apiKey = process.env.VALYU_API_KEY;
-        if (!apiKey) {
-          return "❌ Valyu API key not configured. Please add VALYU_API_KEY to your environment variables to enable economics search.";
+      const apiKey = process.env.VALYU_API_KEY;
+      if (!apiKey) {
+        return "❌ Valyu API key not configured. Please add VALYU_API_KEY to your environment variables to enable economics search.";
+      }
+      const valyu = new Valyu(apiKey, "https://api.valyu.network/v1");
+
+      const searchOptions: any = {
+        maxNumResults: maxResults || 10,
+      };
+
+      let fetchError: unknown = null;
+      const response = await callValyuWithTimeout(
+        valyu,
+        query,
+        searchOptions,
+        30000,
+        2
+      ).catch((error: unknown) => {
+        fetchError = error;
+        return null;
+      });
+
+      if (!response) {
+        if (fetchError instanceof Error) {
+          if (
+            fetchError.message.includes("401") ||
+            fetchError.message.includes("unauthorized")
+          ) {
+            return "🔐 Invalid Valyu API key. Please check your VALYU_API_KEY environment variable for economics search.";
+          }
+          if (fetchError.message.includes("429")) {
+            return "⏱️ Rate limit exceeded. Please try again in a moment.";
+          }
+          if (
+            fetchError.message.includes("network") ||
+            fetchError.message.includes("fetch")
+          ) {
+            return "🌐 Network error connecting to Valyu API. Please check your internet connection.";
+          }
+          return `❌ Error searching economics data: ${fetchError.message}`;
         }
-        const valyu = new Valyu(apiKey, "https://api.valyu.network/v1");
+        return "❌ Error searching economics data: Unknown error";
+      }
 
-        // Configure search based on data type
-        let searchOptions: any = {
-          maxNumResults: maxResults || 10,
-        };
+      await track("Valyu API Call", {
+        toolType: "economicsSearch",
+        query: query,
+        dataType: dataType || "auto",
+        maxResults: maxResults || 10,
+        resultCount: response?.results?.length || 0,
+        hasApiKey: !!apiKey,
+        cost: (response as any)?.total_deduction_dollars || null,
+        txId: (response as any)?.tx_id || null,
+      });
 
-        const response = await callValyuWithTimeout(
-          valyu,
-          query,
-          searchOptions,
-          30000, // 30 second timeout
-          2 // 2 retries
-        );
+      if (userId && sessionId && userTier === "pay_per_use" && !isDevelopment) {
+        const polarTracker = new PolarEventTracker();
+        const valyuCostDollars =
+          (response as any)?.total_deduction_dollars || 0;
 
-        // Track Valyu financial search call
-        await track("Valyu API Call", {
-          toolType: "economicsSearch",
-          query: query,
-          dataType: dataType || "auto",
-          maxResults: maxResults || 10,
-          resultCount: response?.results?.length || 0,
-          hasApiKey: !!apiKey,
-          cost: (response as any)?.total_deduction_dollars || null,
-          txId: (response as any)?.tx_id || null,
-        });
-
-        // Track usage for pay-per-use customers with Polar events
-        if (
-          userId &&
-          sessionId &&
-          userTier === "pay_per_use" &&
-          !isDevelopment
-        ) {
-          try {
-            const polarTracker = new PolarEventTracker();
-            // Use the actual Valyu API cost from response
-            const valyuCostDollars =
-              (response as any)?.total_deduction_dollars || 0;
-
-            // Bright green color: \x1b[92m ... \x1b[0m
-            await polarTracker.trackValyuAPIUsage(
-              userId,
-              sessionId,
-              "economicsSearch",
-              valyuCostDollars,
-              {
-                query,
-                resultCount: response?.results?.length || 0,
-                dataType: dataType || "auto",
-                success: true,
-                tx_id: (response as any)?.tx_id,
-              }
-            );
-          } catch (error) {
+        await polarTracker
+          .trackValyuAPIUsage(
+            userId,
+            sessionId,
+            "economicsSearch",
+            valyuCostDollars,
+            {
+              query,
+              resultCount: response?.results?.length || 0,
+              dataType: dataType || "auto",
+              success: true,
+              tx_id: (response as any)?.tx_id,
+            }
+          )
+          .catch((error: unknown) => {
             console.error(
               "[EconomicsSearch] Failed to track Valyu API usage:",
               error
             );
-            // Don't fail the search if usage tracking fails
-          }
-        }
-
-        // // Log the full API response for debugging
-        //         if (!response || !response.results || response.results.length === 0) {
-          return `🔍 No economics data found for "${query}". Try rephrasing your search or checking if the company/symbol exists.`;
-        }
-
-        // // Log key information about the search
-        //         // Return structured data for the model to process
-        const formattedResponse = {
-          type: "economics_search",
-          query: query,
-          dataType: dataType,
-          resultCount: response.results.length,
-          results: response.results.map((result: any) => ({
-            title: result.title || "Financial Data",
-            url: result.url,
-            content: result.content,
-            date: result.metadata?.date,
-            source: result.metadata?.source,
-            dataType: result.data_type,
-            length: result.length,
-            image_url: result.image_url || {},
-            relevance_score: result.relevance_score,
-          })),
-        };
-
-                return JSON.stringify(formattedResponse, null, 2);
-      } catch (error) {
-        if (error instanceof Error) {
-          if (
-            error.message.includes("401") ||
-            error.message.includes("unauthorized")
-          ) {
-            return "🔐 Invalid Valyu API key. Please check your VALYU_API_KEY environment variable for economics search.";
-          }
-          if (error.message.includes("429")) {
-            return "⏱️ Rate limit exceeded. Please try again in a moment.";
-          }
-          if (
-            error.message.includes("network") ||
-            error.message.includes("fetch")
-          ) {
-            return "🌐 Network error connecting to Valyu API. Please check your internet connection.";
-          }
-        }
-
-        return `❌ Error searching economics data: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`;
+          });
       }
+
+      if (!response.results || response.results.length === 0) {
+        return `🔍 No economics data found for "${query}". Try rephrasing your search or checking if the company/symbol exists.`;
+      }
+
+      const formattedResponse = {
+        type: "economics_search",
+        query: query,
+        dataType: dataType,
+        resultCount: response.results.length,
+        results: response.results.map((result: any) => ({
+          title: result.title || "Financial Data",
+          url: result.url,
+          content: result.content,
+          date: result.metadata?.date,
+          source: result.metadata?.source,
+          dataType: result.data_type,
+          length: result.length,
+          image_url: result.image_url || {},
+          relevance_score: result.relevance_score,
+        })),
+      };
+
+      return JSON.stringify(formattedResponse, null, 2);
     },
   }),
-
   getFREDSeriesData: tool({
     description:
       "Get full detailed information about a specific FRED (Federal Reserve Economic Data) time series using a search query. Use this to find and retrieve FRED economic data.",
@@ -1341,11 +1379,11 @@ ${execution.result || "(No output produced)"}
 
         await track("Valyu API Call", {
           toolType: "getFREDSeriesData",
-          query: query,
+          query,
           resultCount: response?.results?.length || 0,
           hasApiKey: !!apiKey,
-          cost: (response as any)?.total_deduction_dollars || null,
-          txId: (response as any)?.tx_id || null,
+          cost: (response as any)?.total_deduction_dollars ?? null,
+          txId: (response as any)?.tx_id ?? null,
         });
 
         if (
@@ -1357,7 +1395,7 @@ ${execution.result || "(No output produced)"}
           try {
             const polarTracker = new PolarEventTracker();
             const valyuCostDollars =
-              (response as any)?.total_deduction_dollars || 0;
+              (response as any)?.total_deduction_dollars ?? 0;
             await polarTracker.trackValyuAPIUsage(
               userId,
               sessionId,
@@ -1382,7 +1420,7 @@ ${execution.result || "(No output produced)"}
           return JSON.stringify(
             {
               type: "FRED_series_details",
-              query: query,
+              query,
               found: false,
               message: `No FRED series found for query: ${query}`,
             },
@@ -1393,30 +1431,12 @@ ${execution.result || "(No output produced)"}
 
         // Parse the full trial data
         const result = response.results[0];
-        let trialData;
-        try {
-          trialData = JSON.parse(result.content);
-        } catch (e) {
-          // If parsing fails, return the raw content
-          return JSON.stringify(
-            {
-              type: "FRED_series_details",
-              query: query,
-              found: true,
-              title: result.title,
-              url: result.url,
-              content: result.content,
-              note: "Raw content provided - parsing failed",
-            },
-            null,
-            2
-          );
-        }
+        const trialData = parseApiContent(result.content);
 
         // Return the full parsed trial data
         const formattedResponse = {
           type: "FRED_series_details",
-          query: query,
+          query,
           found: true,
           title: result.title,
           url: result.url,
@@ -1428,8 +1448,8 @@ ${execution.result || "(No output produced)"}
       } catch (error) {
         if (error instanceof Error) {
           if (
-            error.message.includes("401") ||
-            error.message.includes("unauthorized")
+            error.message?.includes("401") ||
+            error.message?.includes("unauthorized")
           ) {
             return "🔐 Invalid Valyu API key. Please check your VALYU_API_KEY environment variable.";
           }
@@ -1581,25 +1601,7 @@ ${execution.result || "(No output produced)"}
 
         // Parse the full trial data
         const result = response.results[0];
-        let trialData;
-        try {
-          trialData = JSON.parse(result.content);
-        } catch (e) {
-          // If parsing fails, return the raw content
-          return JSON.stringify(
-            {
-              type: "BLS_series_details",
-              query: query,
-              found: true,
-              title: result.title,
-              url: result.url,
-              content: result.content,
-              note: "Raw content provided - parsing failed",
-            },
-            null,
-            2
-          );
-        }
+        const trialData = parseApiContent(result.content);
 
         // Return the full parsed trial data
         const formattedResponse = {
@@ -1962,25 +1964,7 @@ ${execution.result || "(No output produced)"}
 
         // Parse the full trial data
         const result = response.results[0];
-        let trialData;
-        try {
-          trialData = JSON.parse(result.content);
-        } catch (e) {
-          // If parsing fails, return the raw content
-          return JSON.stringify(
-            {
-              type: "USASpending_series_details",
-              query: query,
-              found: true,
-              title: result.title,
-              url: result.url,
-              content: result.content,
-              note: "Raw content provided - parsing failed",
-            },
-            null,
-            2
-          );
-        }
+        const trialData = parseApiContent(result.content);
 
         // Return the full parsed trial data
         const formattedResponse = {
