@@ -169,6 +169,12 @@ const mapToolTypeToCitationCategory = (
   }
 };
 
+const scrollDebug = (...args: unknown[]) => {
+  if (process.env.NEXT_PUBLIC_APP_MODE === "development") {
+    console.log(...args);
+  }
+};
+
 const ReasoningComponent = ({
   part,
   messageId,
@@ -3201,7 +3207,7 @@ export function ChatInterface({
     const distanceFromBottom =
       container.scrollHeight - container.scrollTop - container.clientHeight;
     const atBottom = distanceFromBottom <= threshold;
-    console.log("[SCROLL DEBUG] isAtBottom (container):", {
+    scrollDebug("[SCROLL DEBUG] isAtBottom (container):", {
       scrollHeight: container.scrollHeight,
       scrollTop: container.scrollTop,
       clientHeight: container.clientHeight,
@@ -3217,7 +3223,7 @@ export function ChatInterface({
     const container = messagesContainerRef.current;
     if (!container) return;
 
-    console.log("[SCROLL DEBUG] Message update triggered:", {
+    scrollDebug("[SCROLL DEBUG] Message update triggered:", {
       userHasInteracted: userHasInteracted.current,
       messageCount: messages.length,
       status,
@@ -3237,26 +3243,26 @@ export function ChatInterface({
     // ONLY auto-scroll if sticky is enabled AND streaming/submitted
     const isLoading = status === "submitted" || status === "streaming";
     if (isLoading && shouldStickToBottomRef.current) {
-      console.log(
+      scrollDebug(
         "[SCROLL DEBUG] AUTO-SCROLLING because stick-to-bottom is enabled"
       );
       // Small delay to let content render
       requestAnimationFrame(() => {
         const c = messagesContainerRef.current;
         if (c && c.scrollHeight > c.clientHeight + 1) {
-          console.log("[SCROLL DEBUG] Scrolling container to bottom");
+          scrollDebug("[SCROLL DEBUG] Scrolling container to bottom");
           c.scrollTo({ top: c.scrollHeight, behavior: "smooth" });
         } else {
           const doc = document.scrollingElement || document.documentElement;
           const targetTop = doc.scrollHeight;
-          console.log("[SCROLL DEBUG] Scrolling window to bottom", {
+          scrollDebug("[SCROLL DEBUG] Scrolling window to bottom", {
             targetTop,
           });
           window.scrollTo({ top: targetTop, behavior: "smooth" });
         }
       });
     } else {
-      console.log(
+      scrollDebug(
         "[SCROLL DEBUG] NOT auto-scrolling - stick-to-bottom disabled"
       );
     }
@@ -3266,11 +3272,11 @@ export function ChatInterface({
   useEffect(() => {
     const container = messagesContainerRef.current;
     if (!container) {
-      console.log("[SCROLL DEBUG] Container not found in scroll handler!");
+      scrollDebug("[SCROLL DEBUG] Container not found in scroll handler!");
       return;
     }
 
-    console.log(
+    scrollDebug(
       "[SCROLL DEBUG] Setting up scroll handlers on container:",
       container
     );
@@ -3278,7 +3284,7 @@ export function ChatInterface({
     const handleScroll = () => {
       const atBottom = isAtBottom();
       setIsAtBottomState(atBottom);
-      console.log(
+      scrollDebug(
         "[SCROLL DEBUG] Scroll event fired (container), atBottom:",
         atBottom
       );
@@ -3292,11 +3298,11 @@ export function ChatInterface({
 
     // Handle wheel events to immediately detect scroll intent
     const handleWheel = (e: WheelEvent) => {
-      console.log("[SCROLL DEBUG] Wheel event detected, deltaY:", e.deltaY);
+      scrollDebug("[SCROLL DEBUG] Wheel event detected, deltaY:", e.deltaY);
 
       // If scrolling up, immediately disable auto-scroll
       if (e.deltaY < 0) {
-        console.log(
+        scrollDebug(
           "[SCROLL DEBUG] User scrolling UP via wheel - disabling auto-scroll"
         );
         userHasInteracted.current = true;
@@ -3308,7 +3314,7 @@ export function ChatInterface({
           if (atBottom) {
             userHasInteracted.current = false; // Reset if back at bottom
             shouldStickToBottomRef.current = true;
-            console.log(
+            scrollDebug(
               "[SCROLL DEBUG] User scrolled to bottom via wheel - enabling stick-to-bottom"
             );
           }
@@ -3328,7 +3334,7 @@ export function ChatInterface({
 
       if (deltaY > 10) {
         // Scrolling up
-        console.log(
+        scrollDebug(
           "[SCROLL DEBUG] Touch scroll UP detected - disabling auto-scroll"
         );
         userHasInteracted.current = true;
@@ -3349,12 +3355,12 @@ export function ChatInterface({
     const handleGlobalWheel = (e: WheelEvent) => {
       const inContainer = container.contains(e.target as Node);
       if (inContainer) {
-        console.log(
+        scrollDebug(
           "[SCROLL DEBUG] Global wheel event in container, deltaY:",
           e.deltaY
         );
         if (e.deltaY < 0) {
-          console.log(
+          scrollDebug(
             "[SCROLL DEBUG] Global scroll UP - disabling auto-scroll"
           );
           userHasInteracted.current = true;
@@ -3398,7 +3404,7 @@ export function ChatInterface({
   // Scroll to bottom when user submits a message
   useEffect(() => {
     if (status === "submitted") {
-      console.log("[SCROLL DEBUG] User submitted message, scrolling to bottom");
+      scrollDebug("[SCROLL DEBUG] User submitted message, scrolling to bottom");
       userHasInteracted.current = false; // Reset interaction flag for new message
       shouldStickToBottomRef.current = true; // Re-enable stickiness on new message
       // Always scroll to bottom when user sends a message
