@@ -2576,7 +2576,6 @@ export function ChatInterface({
             "[Chat Interface] Preparing request, user:",
             user?.id || "anonymous"
           );
-          console.log("[prepareSendMessagesRequest] fastMode =", fastMode);
           let enrichedMessages = messages;
           if (libraryContextRef.current.length > 0) {
             const pendingContext = libraryContextRef.current;
