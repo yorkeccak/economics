@@ -169,9 +169,28 @@ const mapToolTypeToCitationCategory = (
   }
 };
 
+type ChatLogLevel = "log" | "warn" | "error";
+
+const chatDebug = (...args: unknown[]) => {
+  if (process.env.NEXT_PUBLIC_APP_MODE !== "development") {
+    return;
+  }
+
+  if (
+    typeof args[0] === "string" &&
+    (args[0] === "log" || args[0] === "warn" || args[0] === "error")
+  ) {
+    const [level, ...rest] = args as [ChatLogLevel, ...unknown[]];
+    console[level](...rest);
+    return;
+  }
+
+  console.log(...args);
+};
+
 const scrollDebug = (...args: unknown[]) => {
   if (process.env.NEXT_PUBLIC_APP_MODE === "development") {
-    console.log(...args);
+    chatDebug(...args);
   }
 };
 
@@ -523,7 +542,7 @@ const safeParseJSON = (value: unknown) => {
     try {
       return JSON.parse(value);
     } catch (error) {
-      console.warn("[Chat Interface] Failed to parse JSON output:", error);
+      chatDebug("warn", "[Chat Interface] Failed to parse JSON output:", error);
       return null;
     }
   }
@@ -1877,7 +1896,7 @@ export function ChatInterface({
     async (files: File[]) => {
       if (!files?.length) return;
 
-      console.log(
+      chatDebug(
         "[Chat Interface] Processing files:",
         files.map((f) => f.name)
       );
@@ -1904,7 +1923,7 @@ export function ChatInterface({
             const base = createSavedItemFromFile(file);
             const extractedText = result.extractedText;
 
-            console.log(
+            chatDebug(
               `[Chat Interface] File ${file.name} extracted text length:`,
               extractedText?.length || 0
             );
@@ -1930,7 +1949,8 @@ export function ChatInterface({
             });
           }
         } catch (error) {
-          console.error(
+          chatDebug(
+            "error",
             `[Chat Interface] Error processing file ${file.name}:`,
             error
           );
@@ -2108,13 +2128,13 @@ export function ChatInterface({
     (question: string, items: SavedItem[]) => {
       if (items.length === 0) return question;
 
-      console.log(
+      chatDebug(
         "[Chat Interface] Building context instruction with items:",
         items.length
       );
       items.forEach((item, index) => {
         const details = summariseSavedItem(item);
-        console.log(
+        chatDebug(
           `[Chat Interface] Context item ${index + 1}: ${
             item.title
           }, content length: ${details?.length || 0}`
@@ -2138,7 +2158,7 @@ export function ChatInterface({
         "\n\n"
       )}\n\n[USER PROMPT]\n${question}`;
 
-      console.log(
+      chatDebug(
         "[Chat Interface] Enriched text length:",
         enrichedText.length
       );
@@ -2493,7 +2513,7 @@ export function ChatInterface({
 
         if (response.ok) {
           const { session: newSession } = await response.json();
-          console.log(
+          chatDebug(
             "[Chat Interface] Created new session quickly:",
             newSession.id
           );
@@ -2519,14 +2539,14 @@ export function ChatInterface({
                   },
                   body: JSON.stringify({ title: aiTitle }),
                 });
-                console.log(
+                chatDebug(
                   "[Chat Interface] Updated session title with AI:",
                   aiTitle
                 );
               }
             })
             .catch(() => {
-              console.log(
+              chatDebug(
                 "[Chat Interface] AI title generation failed, keeping fallback"
               );
             });
@@ -2534,7 +2554,7 @@ export function ChatInterface({
           return newSession.id;
         }
       } catch (error) {
-        console.error("[Chat Interface] Failed to create session:", error);
+        chatDebug("error", "[Chat Interface] Failed to create session:", error);
       }
       return null;
     },
@@ -2552,7 +2572,7 @@ export function ChatInterface({
           if (selectedModel) {
             headers["x-ollama-model"] = selectedModel;
           }
-          console.log(
+          chatDebug(
             "[Chat Interface] Preparing request, user:",
             user?.id || "anonymous"
           );
@@ -2762,7 +2782,7 @@ export function ChatInterface({
             const {
               data: { session },
             } = await supabase.auth.getSession();
-            console.log(
+            chatDebug(
               "[Chat Interface] Session access_token exists:",
               !!session?.access_token
             );
@@ -2809,7 +2829,7 @@ export function ChatInterface({
     onFinish: () => {
       // Sync with server when chat completes (server has definitely processed increment by now)
       if (user) {
-        console.log(
+        chatDebug(
           "[Chat Interface] Chat finished, syncing rate limit with server"
         );
         queryClient.invalidateQueries({ queryKey: ["rateLimit"] });
@@ -2902,22 +2922,24 @@ export function ChatInterface({
           try {
             sessionData = await response.json();
           } catch (jsonError) {
-            console.error(
+            chatDebug(
+              "error",
               "[Chat Interface] JSON parsing error when loading session:",
               jsonError
             );
-            console.error("[Chat Interface] Response status:", response.status);
-            console.error(
+            chatDebug("error", "[Chat Interface] Response status:", response.status);
+            chatDebug(
+              "error",
               "[Chat Interface] Response headers:",
               Object.fromEntries(response.headers.entries())
             );
             const responseText = await response.text();
-            console.error("[Chat Interface] Response text:", responseText);
+            chatDebug("error", "[Chat Interface] Response text:", responseText);
             throw new Error("Failed to parse session data");
           }
 
           const { messages: sessionMessages } = sessionData;
-          console.log(
+          chatDebug(
             "[Chat Interface] Loaded session messages:",
             sessionMessages.length
           );
@@ -2972,7 +2994,7 @@ export function ChatInterface({
           setTimeout(() => {
             const c = messagesContainerRef.current;
             if (c) {
-              console.log(
+              chatDebug(
                 "[Chat Interface] Scrolling to bottom after session load"
               );
               c.scrollTo({ top: c.scrollHeight, behavior: "smooth" });
@@ -2984,7 +3006,7 @@ export function ChatInterface({
           }, 500);
         }
       } catch (error) {
-        console.error("[Chat Interface] Failed to load session:", error);
+        chatDebug("error", "[Chat Interface] Failed to load session:", error);
       } finally {
         setIsLoadingSession(false);
       }
@@ -3007,7 +3029,7 @@ export function ChatInterface({
   useEffect(() => {
     if (!sessionId || !user) {
       if (sessionId && !user) {
-        console.log(
+        chatDebug(
           "[Chat Interface] Waiting for authenticated user before loading session"
         );
       }
@@ -3015,7 +3037,7 @@ export function ChatInterface({
     }
 
     if (sessionId !== currentSessionId) {
-      console.log("[Chat Interface] Loading session:", sessionId);
+      chatDebug("[Chat Interface] Loading session:", sessionId);
       loadSessionMessages(sessionId);
     }
   }, [sessionId, user, currentSessionId, loadSessionMessages]);
@@ -3025,10 +3047,10 @@ export function ChatInterface({
     if (sessionId !== undefined) return;
     if (!currentSessionId) return;
 
-    console.log("[Chat Interface] Clearing for new chat");
+    chatDebug("[Chat Interface] Clearing for new chat");
 
     if (status === "streaming" || status === "submitted") {
-      console.log("[Chat Interface] Stopping ongoing chat for new chat");
+      chatDebug("[Chat Interface] Stopping ongoing chat for new chat");
       stop();
     }
 
@@ -3042,7 +3064,7 @@ export function ChatInterface({
   }, [sessionId, currentSessionId, status, stop, onNewChat]);
 
   useEffect(() => {
-    console.log("Messages updated:", messages);
+    chatDebug("Messages updated:", messages);
   }, [messages]);
 
   // Check rate limit status
@@ -3074,7 +3096,7 @@ export function ChatInterface({
   // Handle rate limit errors
   useEffect(() => {
     if (error) {
-      console.log("[Chat Interface] Error occurred:", error);
+      chatDebug("[Chat Interface] Error occurred:", error);
 
       // Check if it's a rate limit error
       if (
@@ -3103,7 +3125,7 @@ export function ChatInterface({
 
   // Notify parent component about message state changes
   useEffect(() => {
-    console.log("[Chat Interface] Messages changed, count:", messages.length);
+    chatDebug("[Chat Interface] Messages changed, count:", messages.length);
     onMessagesChange?.(messages.length > 0);
   }, [messages.length]); // Remove onMessagesChange from dependencies to prevent infinite loops
 
@@ -3421,13 +3443,13 @@ export function ChatInterface({
     e.preventDefault();
     if (input.trim() && status === "ready") {
       // Check current rate limit status immediately before sending
-      console.log("[Chat Interface] Rate limit check before submit:", {
+      chatDebug("[Chat Interface] Rate limit check before submit:", {
         canSendQuery,
       });
 
       if (!canSendQuery) {
         // Rate limit exceeded - show dialog and don't send message or update URL
-        console.log("[Chat Interface] Rate limit exceeded, showing dialog");
+        chatDebug("[Chat Interface] Rate limit exceeded, showing dialog");
         setIsRateLimited(true);
         onRateLimitError?.(
           resetTime?.toISOString() || new Date().toISOString()
@@ -3435,7 +3457,7 @@ export function ChatInterface({
         return;
       }
 
-      console.log("[Chat Interface] Rate limit OK, proceeding with message");
+      chatDebug("[Chat Interface] Rate limit OK, proceeding with message");
 
       // Store the input to send
       const queryText = input.trim();
@@ -3464,7 +3486,7 @@ export function ChatInterface({
 
       // Create session BEFORE sending message for proper usage tracking
       if (user && !currentSessionId && messages.length === 0) {
-        console.log(
+        chatDebug(
           "[Chat Interface] Creating session synchronously for first message"
         );
         try {
@@ -3473,27 +3495,28 @@ export function ChatInterface({
             sessionIdRef.current = newSessionId;
             setCurrentSessionId(newSessionId);
             onSessionCreated?.(newSessionId);
-            console.log(
+            chatDebug(
               "[Chat Interface] Session created before message:",
               newSessionId
             );
           }
         } catch (error) {
-          console.error("[Chat Interface] Failed to create session:", error);
+          chatDebug("error", "[Chat Interface] Failed to create session:", error);
           // Continue with message sending even if session creation fails
         }
       }
 
       // Increment rate limit for anonymous users (authenticated users handled server-side)
       if (!user && increment) {
-        console.log(
+        chatDebug(
           "[Chat Interface] Incrementing rate limit for anonymous user"
         );
         try {
           const result = await increment();
-          console.log("[Chat Interface] Anonymous increment result:", result);
+          chatDebug("[Chat Interface] Anonymous increment result:", result);
         } catch (error) {
-          console.error(
+          chatDebug(
+            "error",
             "[Chat Interface] Failed to increment anonymous rate limit:",
             error
           );
@@ -3511,7 +3534,7 @@ export function ChatInterface({
 
       // For authenticated users, trigger optimistic rate limit update
       if (user) {
-        console.log("[Chat Interface] Triggering optimistic rate limit update");
+        chatDebug("[Chat Interface] Triggering optimistic rate limit update");
         rateLimitMutation.mutate();
       }
     }
