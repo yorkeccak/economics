@@ -8,6 +8,10 @@ import { PolarEventTracker } from "./polar-events";
 import { Daytona } from "@daytonaio/sdk";
 import { createHash } from "node:crypto";
 
+const DAYTONA_EXECUTION_TIMEOUT_MS = parseInt(
+  process.env.DAYTONA_EXECUTION_TIMEOUT_MS || "60000"
+);
+
 // Helper function to handle API calls with timeout and retry logic
 async function callValyuWithTimeout(
   valyu: Valyu,
@@ -18,17 +22,8 @@ async function callValyuWithTimeout(
 ): Promise<any> {
   let lastError: Error | null = null;
 
-  console.log("[Valyu API] Starting API call:", {
-    searchQuery,
-    searchOptions,
-    timeoutMs,
-    maxRetries,
-  });
-
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      console.log(`[Valyu API] Attempt ${attempt + 1}/${maxRetries + 1}`);
-
       // Create a timeout promise
       const timeoutPromise = new Promise((_, reject) => {
         setTimeout(
@@ -43,10 +38,6 @@ async function callValyuWithTimeout(
         timeoutPromise,
       ]);
 
-      console.log("[Valyu API] API call successful:", {
-        hasResults: !!(result as any)?.results,
-        resultsCount: (result as any)?.results?.length || 0,
-      });
       return result;
     } catch (error: any) {
       lastError = error;
@@ -61,11 +52,6 @@ async function callValyuWithTimeout(
         if (attempt < maxRetries) {
           // Exponential backoff: wait 1s, then 2s, then 4s
           const delay = Math.pow(2, attempt) * 1000;
-          console.log(
-            `API call failed (attempt ${attempt + 1}/${
-              maxRetries + 1
-            }), retrying in ${delay}ms...`
-          );
           await new Promise((resolve) => setTimeout(resolve, delay));
           continue;
         }
@@ -174,6 +160,58 @@ function extractDoi(s?: string) {
   if (!s) return undefined;
   const m = s.match(/10\.\d{4,9}\/[-._;()/:A-Z0-9]+/i);
   return m?.[0]?.toLowerCase();
+}
+
+function parseApiContent(content: unknown, maxDepth = 4): any {
+  if (typeof content !== "string") {
+    return content;
+  }
+
+  let current: any = content;
+  for (let attempt = 0; attempt < maxDepth; attempt++) {
+    const trimmed = typeof current === "string" ? current.trim() : current;
+
+    if (typeof trimmed !== "string") {
+      return trimmed;
+    }
+
+    if (!trimmed) {
+      return "";
+    }
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed === "string") {
+        current = parsed;
+        continue;
+      }
+      return parsed;
+    } catch {
+      const hasWrappingQuotes =
+        (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+        (trimmed.startsWith("'") && trimmed.endsWith("'"));
+
+      if (hasWrappingQuotes) {
+        current = trimmed.slice(1, -1);
+        continue;
+      }
+
+      const unescaped = trimmed
+        .replace(/\\"/g, '"')
+        .replace(/\\n/g, "\n")
+        .replace(/\\r/g, "\r")
+        .replace(/\\t/g, "\t");
+
+      if (unescaped !== trimmed) {
+        current = unescaped;
+        continue;
+      }
+
+      break;
+    }
+  }
+
+  return current;
 }
 
 function resultId(r: any) {
@@ -377,16 +415,7 @@ function logDedupe(
   mapped: number,
   unique: number,
   final: any[]
-) {
-  console.log(`[${tool}] dedupe`, {
-    requestId,
-    raw,
-    mapped,
-    unique,
-    final: final.length,
-    ids: final.map((x: any) => x.id).slice(0, 50),
-  });
-}
+) {}
 
 export const economicsTools = {
   // File reading tools - allow the model to read user-provided files via URLs
@@ -855,20 +884,6 @@ export const economicsTools = {
       }));
 
       // Log chart creation details
-      console.log("[Chart Creation] Creating chart:", {
-        title,
-        type,
-        xAxisLabel,
-        yAxisLabel,
-        seriesCount: dataSeries.length,
-        totalDataPoints: dataSeries.reduce(
-          (sum, series) => sum + series.data.length,
-          0
-        ),
-        seriesNames: dataSeries.map((s) => s.name),
-        dataSorted: true,
-      });
-
       // Return structured chart data for the UI to render
       const chartData = {
         chartType: type,
@@ -895,26 +910,34 @@ export const economicsTools = {
         },
       };
 
-      console.log(
-        "[Chart Creation] Chart data size:",
-        JSON.stringify(chartData).length,
-        "bytes"
-      );
-
       return chartData;
     },
   }),
 
   codeExecution: tool({
-    description: `Execute Python code securely in a Daytona Sandbox for financial modeling, data analysis, and calculations. CRITICAL: Always include print() statements to show results. Daytona can also capture rich artifacts (e.g., charts) when code renders images.
-
-    IMPORTANT INSTRUCTIONS:
-    - DO NOT import any external packages, not even basic ones likes math. Only use standard library utilities (math, statistics, etc.).
-    - Do **not** under any circumstances attempt to install packages (pip, conda, etc.) or load external files or networks.
-    - Keep everything self-contained in plain Python.
-    - Your entire code MUST be strictly **under 10,000 characters** (including all whitespace and comments). If your code is too long, shorten or simplify it.
+    description: `Execute Python code securely in a Daytona Sandbox for financial modeling, data analysis, and calculations. 
+    
+    🚨 IMPORTANT: Keep your code concise so it runs reliably in the Daytona sandbox. Extremely large scripts can hit execution limits or time out, so break complex work into smaller runs when possible.
+    
+    CRITICAL: Always include print() statements to show results. Daytona can also capture rich artifacts (e.g., charts) when code renders images.
 
     REQUIRED FORMAT - Your Python code MUST include print statements:
+
+    IMPORTANT INSTRUCTIONS:
+    - CODE LENGTH: Aim to keep scripts reasonably small (≈15k characters or less). Very large programs may time out or fail to execute.
+    - EXECUTION TIME: Each run has a hard ${
+      DAYTONA_EXECUTION_TIMEOUT_MS / 1000
+    }s wall-clock limit. Break long workflows into multiple runs.
+    - Do not install or upgrade packages. Do not access the network.
+    - If an import is missing, raise a clear error; do not attempt pip, subprocess calls to pip, or any downloader. Use only stdlib, NumPy, and pandas already present.
+    - Array-safe numerics: Use NumPy for all array operations (np.exp, np.sqrt, np.log, etc.). Do not call math.* on arrays.
+    - Normal CDF / p-values: Do not use SciPy or np.erf. Use a provided norm_cdf that works on scalars and arrays.
+    - Shape discipline: All inputs must be strictly 1-D or 2-D. Before any linear algebra or broadcasting, assert shapes and length alignment (e.g., len(time) == len(event) == X.shape[0]). If a mismatch exists, raise a clear error immediately.
+    - Determinism: Use np.random.default_rng(<fixed_seed>) for randomness.
+    - I/O and side-effects: No background downloads; no writes outside /mnt/data. Keep console output concise and human-readable.
+    - Stability: Standardize numeric features when appropriate; add small ridge terms (e.g., 1e-6) if matrices are near-singular; avoid holding giant (n,p,p) tensors unless necessary.
+    - Clarity on failure: If any step cannot be satisfied under these rules, stop and print a single clear reason (do not auto-retry with different libraries or shapes).
+    - KEEP CODE SHORT: Break complex tasks into smaller pieces or simplify. Staying concise avoids sandbox timeouts.
     
     Example for financial calculations:
     # Calculate compound interest
@@ -929,9 +952,10 @@ export const economicsTools = {
     print(f"Interest earned: $\{amount - principal:,.2f}")
     
     Example for data analysis:
+    import math
     values = [100, 150, 200, 175, 225]
     average = sum(values) / len(values)
-    std_dev = (sum((x - average) ** 2 for x in values) / len(values)) ** 0.5
+    std_dev = math.sqrt(sum((x - average) ** 2 for x in values) / len(values))
     print(f"Data: \{values}")
     print(f"Average: \{average:.2f}")
     print(f"Standard deviation: \{std_dev:.2f}")
@@ -945,7 +969,7 @@ export const economicsTools = {
       code: z
         .string()
         .describe(
-          "Python code to execute - MUST include print() statements to display results. Use descriptive output formatting with labels, units, and proper number formatting."
+          "Python code to execute - MUST include print() statements to display results. Use descriptive output formatting with labels, units, and proper number formatting. Keep code concise for reliable execution."
         ),
       description: z
         .string()
@@ -959,33 +983,10 @@ export const economicsTools = {
       const sessionId = (options as any)?.experimental_context?.sessionId;
       const userTier = (options as any)?.experimental_context?.userTier;
       const isDevelopment = process.env.NEXT_PUBLIC_APP_MODE === "development";
-      const requestId = (options as any)?.experimental_context?.requestId;
 
       const startTime = Date.now();
-      const validations: ValidationItem[] = [];
 
       try {
-        console.log("[Code Execution] Executing Python code:", {
-          description,
-          codeLength: code.length,
-          codePreview: code.substring(0, 100) + "...",
-        });
-
-        // Check for reasonable code length
-        const lengthOk = code.length <= 10000;
-        validations.push({
-          label: "Code Length",
-          status: lengthOk ? "pass" : "fail",
-          detail: lengthOk
-            ? "Within the 10,000 character limit."
-            : "Code exceeds the 10,000 character limit.",
-        });
-        if (!lengthOk) {
-          return `${formatValidationSummary(
-            validations
-          )}\n\nPlease shorten your code and try again.`;
-        }
-
         // Initialize Daytona client
         const daytonaApiKey = process.env.DAYTONA_API_KEY;
         if (!daytonaApiKey) {
@@ -1000,72 +1001,30 @@ export const economicsTools = {
         });
 
         let sandbox: any | null = null;
+        let timeoutHandle: NodeJS.Timeout | null = null;
+
         try {
           // Create a Python sandbox
           sandbox = await daytona.create({ language: "python" });
 
-          const importRegex =
-            /(^|\s)(?:from\s+[A-Za-z_][A-Za-z0-9_.]*\s+import|import\s+[A-Za-z_][A-Za-z0-9_.]*)/m;
-          const hasImports = importRegex.test(code);
-          validations.push({
-            label: "Import Usage",
-            status: hasImports ? "fail" : "pass",
-            detail: hasImports
-              ? "Import statements detected. The sandbox requires fully self-contained code."
-              : "No import statements detected.",
-          });
-          if (hasImports) {
-            return `${formatValidationSummary(
-              validations
-            )}\n\nRemove the imports and rerun your request.`;
-          }
-
-          // Preflight imports to ensure only available modules are used
-          const importedModules = extractImportedModules(code);
-          const missingModules: string[] = [];
-
-          for (const modName of importedModules) {
-            const check = await sandbox.process.codeRun(`import ${modName}`);
-            if (check.exitCode !== 0) {
-              missingModules.push(modName);
-            }
-          }
-
-          if (missingModules.length > 0) {
-            const uniqueMissing = Array.from(new Set(missingModules));
-            const formatted = uniqueMissing.map((m) => `• \`${m}\``).join("\n");
-            validations.push({
-              label: "Module Availability",
-              status: "fail",
-              detail: `Attempted to import:\n${formatted}`,
-            });
-            return `${formatValidationSummary(
-              validations
-            )}\n\nPlease rewrite your Python code to rely only on built-in modules that are already available (no pip installs).`;
-          }
-          validations.push({
-            label: "Module Availability",
-            status: "pass",
-            detail: "No external module imports attempted.",
-          });
-
-          const aliasIssue = detectCodeIssues(code);
-          if (aliasIssue) {
-            validations.push(aliasIssue);
-            return `${formatValidationSummary(
-              validations
-            )}\n\nUpdate the code to satisfy the sandbox rules and try again.`;
-          }
-          validations.push({
-            label: "NumPy Alias Safety",
-            status: "pass",
-            detail: "No unsupported NumPy alias usage detected.",
-          });
-
-          const validationSummary = formatValidationSummary(validations);
-
           // Execute the user's code
-          const execution = await sandbox.process.codeRun(code);
+          const executionPromise = sandbox.process.codeRun(code);
+          const execution = (await Promise.race([
+            executionPromise,
+            new Promise((_, reject) => {
+              timeoutHandle = setTimeout(() => {
+                reject(
+                  new Error(
+                    `Execution timeout after ${DAYTONA_EXECUTION_TIMEOUT_MS}ms. Please simplify your code or break it into smaller pieces.`
+                  )
+                );
+              }, DAYTONA_EXECUTION_TIMEOUT_MS);
+            }),
+          ])) as Awaited<typeof executionPromise>;
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+            timeoutHandle = null;
+          }
 
           const executionTime = Date.now() - startTime;
 
@@ -1091,15 +1050,6 @@ export const economicsTools = {
             try {
               const polarTracker = new PolarEventTracker();
 
-              console.log(
-                "[CodeExecution] Tracking Daytona usage with Polar:",
-                {
-                  userId,
-                  sessionId,
-                  executionTime,
-                }
-              );
-
               await polarTracker.trackDaytonaUsage(
                 userId,
                 sessionId,
@@ -1124,28 +1074,19 @@ export const economicsTools = {
           if (execution.exitCode !== 0) {
             // Provide helpful error messages for common issues
             let helpfulError = execution.result || "Unknown execution error";
-            const missingModule = extractMissingModuleName(helpfulError);
-            if (missingModule) {
-              helpfulError = `${helpfulError}\n\n🚫 **Unsupported Package**: The Daytona sandbox cannot install external modules like \`${missingModule}\`. Please rewrite your code to use only standard library modules or packages that are already available.`;
-            } else if (helpfulError.includes("NameError")) {
+            if (helpfulError.includes("NameError")) {
               helpfulError = `${helpfulError}\n\n💡 **Tip**: Make sure all variables are defined before use. If you're trying to calculate something, include the full calculation in your code.`;
             } else if (helpfulError.includes("SyntaxError")) {
               helpfulError = `${helpfulError}\n\n💡 **Tip**: Check your Python syntax. Make sure all parentheses, quotes, and indentation are correct.`;
+            } else if (helpfulError.includes("ModuleNotFoundError")) {
+              helpfulError = `${helpfulError}\n\n💡 **Tip**: You can install packages inside the Daytona sandbox using pip if needed (e.g., pip install numpy).`;
             }
 
-            return `${validationSummary}\n\n❌ **Execution Error**: ${escapeModuleTag(
-              helpfulError
-            )}`;
+            return `❌ **Execution Error**: ${helpfulError}`;
           }
 
-          console.log("[Code Execution] Success:", {
-            outputLength: execution.result?.length || 0,
-            executionTime,
-            hasArtifacts: !!execution.artifacts,
-          });
-
           // Format the successful execution result
-          return `${validationSummary}\n\n🐍 **Python Code Execution (Daytona Sandbox)**
+          return `🐍 **Python Code Execution (Daytona Sandbox)**
 ${description ? `**Description**: ${description}\n` : ""}
 
 \`\`\`python
@@ -1154,14 +1095,40 @@ ${code}
 
 **Output:**
 \`\`\`
-${escapeModuleTag(execution.result || "(No output produced)")}
+${execution.result || "(No output produced)"}
 \`\`\`
 
 ⏱️ **Execution Time**: ${executionTime}ms`;
+        } catch (error: any) {
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+            timeoutHandle = null;
+          }
+          console.error("[CodeExecution] Error:", error);
+
+          const isTimeout =
+            typeof error?.message === "string" &&
+            error.message.includes("Execution timeout");
+
+          if (isTimeout) {
+            return `⌛ **Timeout**: The Python sandbox stopped after ${
+              DAYTONA_EXECUTION_TIMEOUT_MS / 1000
+            } seconds. Break the task into smaller steps or reduce the size of the script before retrying.`;
+          }
+
+          return `❌ **Error**: Failed to execute Python code. ${
+            error?.message || "Unknown error occurred"
+          }`;
         } finally {
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+          }
           // Clean up sandbox
           try {
             if (sandbox) {
+              if (typeof sandbox.stop === "function") {
+                await sandbox.stop().catch(() => {});
+              }
               await sandbox.delete();
             }
           } catch (cleanupError) {
@@ -1217,166 +1184,113 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
       const userTier = (options as any)?.experimental_context?.userTier;
       const isDevelopment = process.env.NEXT_PUBLIC_APP_MODE === "development";
 
-      try {
-        // Check if Valyu API key is available
-        const apiKey = process.env.VALYU_API_KEY;
-        if (!apiKey) {
-          return "❌ Valyu API key not configured. Please add VALYU_API_KEY to your environment variables to enable economics search.";
+      const apiKey = process.env.VALYU_API_KEY;
+      if (!apiKey) {
+        return "❌ Valyu API key not configured. Please add VALYU_API_KEY to your environment variables to enable economics search.";
+      }
+      const valyu = new Valyu(apiKey, "https://api.valyu.network/v1");
+
+      const searchOptions: any = {
+        maxNumResults: maxResults || 10,
+      };
+
+      let fetchError: unknown = null;
+      const response = await callValyuWithTimeout(
+        valyu,
+        query,
+        searchOptions,
+        30000,
+        2
+      ).catch((error: unknown) => {
+        fetchError = error;
+        return null;
+      });
+
+      if (!response) {
+        if (fetchError instanceof Error) {
+          if (
+            fetchError.message.includes("401") ||
+            fetchError.message.includes("unauthorized")
+          ) {
+            return "🔐 Invalid Valyu API key. Please check your VALYU_API_KEY environment variable for economics search.";
+          }
+          if (fetchError.message.includes("429")) {
+            return "⏱️ Rate limit exceeded. Please try again in a moment.";
+          }
+          if (
+            fetchError.message.includes("network") ||
+            fetchError.message.includes("fetch")
+          ) {
+            return "🌐 Network error connecting to Valyu API. Please check your internet connection.";
+          }
+          return `❌ Error searching economics data: ${fetchError.message}`;
         }
-        const valyu = new Valyu(apiKey, "https://api.valyu.network/v1");
+        return "❌ Error searching economics data: Unknown error";
+      }
 
-        // Configure search based on data type
-        let searchOptions: any = {
-          maxNumResults: maxResults || 10,
-        };
+      await track("Valyu API Call", {
+        toolType: "economicsSearch",
+        query: query,
+        dataType: dataType || "auto",
+        maxResults: maxResults || 10,
+        resultCount: response?.results?.length || 0,
+        hasApiKey: !!apiKey,
+        cost: (response as any)?.total_deduction_dollars || null,
+        txId: (response as any)?.tx_id || null,
+      });
 
-        const response = await callValyuWithTimeout(
-          valyu,
-          query,
-          searchOptions,
-          30000, // 30 second timeout
-          2 // 2 retries
-        );
+      if (userId && sessionId && userTier === "pay_per_use" && !isDevelopment) {
+        const polarTracker = new PolarEventTracker();
+        const valyuCostDollars =
+          (response as any)?.total_deduction_dollars || 0;
 
-        // Track Valyu financial search call
-        await track("Valyu API Call", {
-          toolType: "economicsSearch",
-          query: query,
-          dataType: dataType || "auto",
-          maxResults: maxResults || 10,
-          resultCount: response?.results?.length || 0,
-          hasApiKey: !!apiKey,
-          cost: (response as any)?.total_deduction_dollars || null,
-          txId: (response as any)?.tx_id || null,
-        });
-
-        // Track usage for pay-per-use customers with Polar events
-        console.log("[EconomicsSearch] Tracking Valyu API usage with Polar:", {
-          userId,
-          sessionId,
-          userTier,
-          isDevelopment,
-        });
-
-        if (
-          userId &&
-          sessionId &&
-          userTier === "pay_per_use" &&
-          !isDevelopment
-        ) {
-          console.log("[EconomicsSearch] Tracking Valyu API usage with Polar:");
-          try {
-            const polarTracker = new PolarEventTracker();
-            // Use the actual Valyu API cost from response
-            const valyuCostDollars =
-              (response as any)?.total_deduction_dollars || 0;
-
-            // Bright green color: \x1b[92m ... \x1b[0m
-            console.log(
-              "\x1b[92m[EconomicsSearch] Tracking Valyu API usage with Polar:\x1b[0m",
-              {
-                userId,
-                sessionId,
-                valyuCostDollars,
-                resultCount: response?.results?.length || 0,
-              }
-            );
-
-            await polarTracker.trackValyuAPIUsage(
-              userId,
-              sessionId,
-              "economicsSearch",
-              valyuCostDollars,
-              {
-                query,
-                resultCount: response?.results?.length || 0,
-                dataType: dataType || "auto",
-                success: true,
-                tx_id: (response as any)?.tx_id,
-              }
-            );
-          } catch (error) {
+        await polarTracker
+          .trackValyuAPIUsage(
+            userId,
+            sessionId,
+            "economicsSearch",
+            valyuCostDollars,
+            {
+              query,
+              resultCount: response?.results?.length || 0,
+              dataType: dataType || "auto",
+              success: true,
+              tx_id: (response as any)?.tx_id,
+            }
+          )
+          .catch((error: unknown) => {
             console.error(
               "[EconomicsSearch] Failed to track Valyu API usage:",
               error
             );
-            // Don't fail the search if usage tracking fails
-          }
-        }
-
-        // // Log the full API response for debugging
-        // console.log(
-        //   "[Financial Search] Full API Response:",
-        //   JSON.stringify(response, null, 2)
-        // );
-
-        if (!response || !response.results || response.results.length === 0) {
-          return `🔍 No economics data found for "${query}". Try rephrasing your search or checking if the company/symbol exists.`;
-        }
-
-        // // Log key information about the search
-        // console.log("[Financial Search] Summary:", {
-        //   query,
-        //   dataType,
-        //   resultCount: response.results.length,
-        //   totalCost: (response as any).price || "N/A",
-        //   txId: (response as any).tx_id || "N/A",
-        //   firstResultTitle: response.results[0]?.title,
-        //   firstResultLength: response.results[0]?.length,
-        // });
-
-        // Return structured data for the model to process
-        const formattedResponse = {
-          type: "economics_search",
-          query: query,
-          dataType: dataType,
-          resultCount: response.results.length,
-          results: response.results.map((result: any) => ({
-            title: result.title || "Financial Data",
-            url: result.url,
-            content: result.content,
-            date: result.metadata?.date,
-            source: result.metadata?.source,
-            dataType: result.data_type,
-            length: result.length,
-            image_url: result.image_url || {},
-            relevance_score: result.relevance_score,
-          })),
-        };
-
-        console.log(
-          "[Economics Search] Formatted response size:",
-          JSON.stringify(formattedResponse).length,
-          "bytes"
-        );
-
-        return JSON.stringify(formattedResponse, null, 2);
-      } catch (error) {
-        if (error instanceof Error) {
-          if (
-            error.message.includes("401") ||
-            error.message.includes("unauthorized")
-          ) {
-            return "🔐 Invalid Valyu API key. Please check your VALYU_API_KEY environment variable for economics search.";
-          }
-          if (error.message.includes("429")) {
-            return "⏱️ Rate limit exceeded. Please try again in a moment.";
-          }
-          if (
-            error.message.includes("network") ||
-            error.message.includes("fetch")
-          ) {
-            return "🌐 Network error connecting to Valyu API. Please check your internet connection.";
-          }
-        }
-
-        return `❌ Error searching economics data: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`;
+          });
       }
+
+      if (!response.results || response.results.length === 0) {
+        return `🔍 No economics data found for "${query}". Try rephrasing your search or checking if the company/symbol exists.`;
+      }
+
+      const formattedResponse = {
+        type: "economics_search",
+        query: query,
+        dataType: dataType,
+        resultCount: response.results.length,
+        results: response.results.map((result: any) => ({
+          title: result.title || "Financial Data",
+          url: result.url,
+          content: result.content,
+          date: result.metadata?.date,
+          source: result.metadata?.source,
+          dataType: result.data_type,
+          length: result.length,
+          image_url: result.image_url || {},
+          relevance_score: result.relevance_score,
+        })),
+      };
+
+      return JSON.stringify(formattedResponse, null, 2);
     },
   }),
-
   getFREDSeriesData: tool({
     description:
       "Get full detailed information about a specific FRED (Federal Reserve Economic Data) time series using a search query. Use this to find and retrieve FRED economic data.",
@@ -1424,9 +1338,6 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
           query,
           searchOptions
         );
-        console.log("[FRED Tool] Starting search with query:", query);
-        console.log("[FRED Tool] Search options:", searchOptions);
-
         const response = await withSessionMemo(sessionId, sessionKey, () =>
           once(
             "getFREDSeriesData",
@@ -1442,12 +1353,6 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
               )
           )
         );
-
-        console.log("[FRED Tool] API Response:", {
-          hasResponse: !!response,
-          resultsCount: response?.results?.length || 0,
-          firstResult: response?.results?.[0]?.title || "No results",
-        });
 
         const mapped = response.results.map((r: any) => {
           const key = r.fred_id || r.metadata?.fred_id;
@@ -1474,11 +1379,11 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
 
         await track("Valyu API Call", {
           toolType: "getFREDSeriesData",
-          query: query,
+          query,
           resultCount: response?.results?.length || 0,
           hasApiKey: !!apiKey,
-          cost: (response as any)?.total_deduction_dollars || null,
-          txId: (response as any)?.tx_id || null,
+          cost: (response as any)?.total_deduction_dollars ?? null,
+          txId: (response as any)?.tx_id ?? null,
         });
 
         if (
@@ -1490,7 +1395,7 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
           try {
             const polarTracker = new PolarEventTracker();
             const valyuCostDollars =
-              (response as any)?.total_deduction_dollars || 0;
+              (response as any)?.total_deduction_dollars ?? 0;
             await polarTracker.trackValyuAPIUsage(
               userId,
               sessionId,
@@ -1515,7 +1420,7 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
           return JSON.stringify(
             {
               type: "FRED_series_details",
-              query: query,
+              query,
               found: false,
               message: `No FRED series found for query: ${query}`,
             },
@@ -1526,30 +1431,12 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
 
         // Parse the full trial data
         const result = response.results[0];
-        let trialData;
-        try {
-          trialData = JSON.parse(result.content);
-        } catch (e) {
-          // If parsing fails, return the raw content
-          return JSON.stringify(
-            {
-              type: "FRED_series_details",
-              query: query,
-              found: true,
-              title: result.title,
-              url: result.url,
-              content: result.content,
-              note: "Raw content provided - parsing failed",
-            },
-            null,
-            2
-          );
-        }
+        const trialData = parseApiContent(result.content);
 
         // Return the full parsed trial data
         const formattedResponse = {
           type: "FRED_series_details",
-          query: query,
+          query,
           found: true,
           title: result.title,
           url: result.url,
@@ -1561,8 +1448,8 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
       } catch (error) {
         if (error instanceof Error) {
           if (
-            error.message.includes("401") ||
-            error.message.includes("unauthorized")
+            error.message?.includes("401") ||
+            error.message?.includes("unauthorized")
           ) {
             return "🔐 Invalid Valyu API key. Please check your VALYU_API_KEY environment variable.";
           }
@@ -1714,25 +1601,7 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
 
         // Parse the full trial data
         const result = response.results[0];
-        let trialData;
-        try {
-          trialData = JSON.parse(result.content);
-        } catch (e) {
-          // If parsing fails, return the raw content
-          return JSON.stringify(
-            {
-              type: "BLS_series_details",
-              query: query,
-              found: true,
-              title: result.title,
-              url: result.url,
-              content: result.content,
-              note: "Raw content provided - parsing failed",
-            },
-            null,
-            2
-          );
-        }
+        const trialData = parseApiContent(result.content);
 
         // Return the full parsed trial data
         const formattedResponse = {
@@ -1800,8 +1669,6 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
           includedSources: ["valyu/valyu-worldbank-indicators"],
         };
 
-        console.log("[WorldBankSearch] Search options:", searchOptions);
-
         // Add timeout configuration to prevent hanging
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
@@ -1842,15 +1709,6 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
             const polarTracker = new PolarEventTracker();
             const valyuCostDollars =
               (response as any)?.total_deduction_dollars || 0;
-            console.log(
-              "[WorldBankSearch] Tracking Valyu API usage with Polar:",
-              {
-                userId,
-                sessionId,
-                valyuCostDollars,
-                resultCount: response?.results?.length || 0,
-              }
-            );
             await polarTracker.trackValyuAPIUsage(
               userId,
               sessionId,
@@ -1892,9 +1750,6 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
         let content = firstResult.content;
         const maxContentLength = 50000; // 50KB limit
         if (content && content.length > maxContentLength) {
-          console.log(
-            `[WorldBank Search] Truncating large content from ${content.length} to ${maxContentLength} characters`
-          );
           content =
             content.substring(0, maxContentLength) +
             "\n\n... (content truncated due to size)";
@@ -1903,7 +1758,6 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
         // Also truncate the data field to prevent massive JSON responses
         let data = firstResult;
         if (data && JSON.stringify(data).length > 20000) {
-          console.log(`[WorldBank Search] Truncating large data field`);
           data = {
             ...firstResult,
             content: "Data available but truncated due to size",
@@ -1921,12 +1775,6 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
           data: data,
           note: `World Bank indicator metadata for ${query}. This is descriptive information about the indicator, not actual time series data.`,
         };
-
-        console.log("[WorldBank Search] Formatted response:", {
-          hasResults: true,
-          title: firstResult.title,
-          contentLength: content?.length || 0,
-        });
 
         try {
           return JSON.stringify(formattedResponse, null, 2);
@@ -2116,25 +1964,7 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
 
         // Parse the full trial data
         const result = response.results[0];
-        let trialData;
-        try {
-          trialData = JSON.parse(result.content);
-        } catch (e) {
-          // If parsing fails, return the raw content
-          return JSON.stringify(
-            {
-              type: "USASpending_series_details",
-              query: query,
-              found: true,
-              title: result.title,
-              url: result.url,
-              content: result.content,
-              note: "Raw content provided - parsing failed",
-            },
-            null,
-            2
-          );
-        }
+        const trialData = parseApiContent(result.content);
 
         // Return the full parsed trial data
         const formattedResponse = {
@@ -2264,13 +2094,6 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
             const valyuCostDollars =
               (response as any)?.total_deduction_dollars || 0;
 
-            console.log("[WebSearch] Tracking Valyu API usage with Polar:", {
-              userId,
-              sessionId,
-              valyuCostDollars,
-              resultCount: response?.results?.length || 0,
-            });
-
             await polarTracker.trackValyuAPIUsage(
               userId,
               sessionId,
@@ -2294,11 +2117,6 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
         }
 
         // Log the full API response for debugging
-        console.log(
-          "[Web Search] Full API Response:",
-          JSON.stringify(response, null, 2)
-        );
-
         if (
           !response ||
           !response.results ||
@@ -2320,19 +2138,6 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
 
         // Log key information about the search
         const metadata = (response as any).metadata;
-        console.log("[Web Search] Summary:", {
-          query,
-          resultCount: final.length,
-          totalCost:
-            metadata?.totalCost ||
-            (response as any).total_deduction_dollars ||
-            "N/A",
-          searchTime: metadata?.searchTime || "N/A",
-          txId: (response as any).tx_id || "N/A",
-          firstResultTitle: final[0]?.title || "N/A",
-          firstResultLength: final[0]?.content?.length || 0,
-        });
-
         // Return structured data for the model to process
         const formattedResponse = {
           type: "web_search",
@@ -2355,12 +2160,6 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
             relevance_score: result.relevance_score,
           })),
         };
-
-        console.log(
-          "[Web Search] Formatted response size:",
-          JSON.stringify(formattedResponse).length,
-          "bytes"
-        );
 
         return JSON.stringify(formattedResponse, null, 2);
       } catch (error) {
@@ -2395,6 +2194,9 @@ ${escapeModuleTag(execution.result || "(No output produced)")}
     },
   }),
 };
+
+(economicsTools as Record<string, any>).financialSearch =
+  economicsTools.economicsSearch;
 
 // Export with both names for compatibility
 export const financeTools = economicsTools;

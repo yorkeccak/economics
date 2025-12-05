@@ -29,7 +29,7 @@ for result in response.results:
     print(f"Title: {result.title}")
     print(f"Content: {result.content[:200]}...")`,
       },
-      {     
+      {
         language: "TypeScript",
         code: `import { Valyu } from 'valyu';
 
@@ -195,7 +195,7 @@ response.results.forEach(statement => {
   {
     name: "Market Data",
     src: "/stocks.svg",
-    description: "Real-time stock, crypto, forex, and market data",
+    description: "Real-time and historical market data",
     snippets: [
       {
         language: "Python",
@@ -203,22 +203,20 @@ response.results.forEach(statement => {
 
 valyu = Valyu(api_key="<your_api_key>")
 
-# Search for stock market data
+# Search market data
 response = valyu.search(
-    "AAPL stock price technical analysis",
+    "Apple stock price July 2024",
     included_sources=[
-        'valyu/valyu-stocks-US',
-        'valyu/valyu-crypto',
-        'valyu/valyu-forex',
-        'valyu/valyu-market-movers-US'
+        "valyu/valyu-market-data-US",
+        "valyu/valyu-statistics-US"
     ] # or leave this empty and we'll figure it out for you
 )
 
-# Get market insights
-for item in response.results:
-    print(f"Symbol: {item.metadata.get('symbol')}")
-    print(f"Price: {item.metadata.get('price')}")
-    print(f"Analysis: {item.content}")`,
+# Access market data
+for data in response.results:
+    print(f"Symbol: {data.metadata.get('symbol')}")
+    print(f"Price: {data.metadata.get('price')}")
+    print(f"Timestamp: {data.metadata.get('timestamp')}")`,
       },
       {
         language: "TypeScript",
@@ -226,22 +224,20 @@ for item in response.results:
 
 const valyu = new Valyu({ apiKey: '<your_api_key>' });
 
-// Search for stock market data
+// Search market data
 const response = await valyu.search({
-    query: 'AAPL stock price technical analysis',
+    query: 'Apple stock price July 2024',
     includedSources: [
-        'valyu/valyu-stocks-US',
-        'valyu/valyu-crypto',
-        'valyu/valyu-forex',
-        'valyu/valyu-market-movers-US'
+        "valyu/valyu-market-data-US",
+        "valyu/valyu-statistics-US"
     ], // or leave this empty and we'll figure it out for you
 });
 
-// Get market insights
-response.results.forEach(item => {
-    console.log(\`Symbol: \${item.metadata?.symbol}\`);
-    console.log(\`Price: $\${item.metadata?.price}\`);
-    console.log(\`Analysis: \${item.content}\`);
+// Access market data
+response.results.forEach(data => {
+    console.log(\`Symbol: \${data.metadata?.symbol}\`);
+    console.log(\`Price: \${data.metadata?.price}\`);
+    console.log(\`Timestamp: \${data.metadata?.timestamp}\`);
 });`,
       },
       {
@@ -250,12 +246,10 @@ response.results.forEach(item => {
   -H "x-api-key: <your_api_key>" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "query": "AAPL stock price technical analysis",
+    "query": "Apple stock price July 2024",
     "included_sources": [
-        "valyu/valyu-stocks-US",
-        "valyu/valyu-crypto",
-        "valyu/valyu-forex",
-        "valyu/valyu-market-movers-US"
+        "valyu/valyu-market-data-US",
+        "valyu/valyu-statistics-US"
     ] # or leave this empty and we'll figure it out for you
   }'`,
       },
@@ -264,7 +258,7 @@ response.results.forEach(item => {
   {
     name: "Web Search",
     src: "/web.svg",
-    description: "General web search with relevance scoring",
+    description: "Search the web with DeepSearch",
     snippets: [
       {
         language: "Python",
@@ -272,17 +266,16 @@ response.results.forEach(item => {
 
 valyu = Valyu(api_key="<your_api_key>")
 
-# Search across the web
+# Perform a web search
 response = valyu.search(
-    "renewable energy investment trends 2024"
+    "latest news about monetary policy",
+    included_sources=["valyu/valyu-web-search"] # or leave this empty and we'll figure it out for you
 )
 
-# Get ranked results
-for result in response.results:
-    print(f"Title: {result.title}")
-    print(f"URL: {result.metadata.get('url')}")
-    print(f"Relevance: {result.metadata.get('relevance_score')}")
-    print(f"Content: {result.content[:200]}...")`,
+# Access articles
+for article in response.results:
+    print(f"Title: {article.title}")
+    print(f"Snippet: {article.content[:200]}...")`,
       },
       {
         language: "TypeScript",
@@ -290,17 +283,16 @@ for result in response.results:
 
 const valyu = new Valyu({ apiKey: '<your_api_key>' });
 
-// Search across the web
+// Perform a web search
 const response = await valyu.search({
-    query: 'renewable energy investment trends 2024'
+    query: 'latest news about monetary policy',
+    includedSources: ['valyu/valyu-web-search'], // or leave this empty and we'll figure it out for you
 });
 
-// Get ranked results
-response.results.forEach(result => {
-    console.log(\`Title: \${result.title}\`);
-    console.log(\`URL: \${result.metadata?.url}\`);
-    console.log(\`Relevance: \${result.metadata?.relevance_score}\`);
-    console.log(\`Content: \${result.content.substring(0, 200)}...\`);
+// Access articles
+response.results.forEach(article => {
+    console.log(\`Title: \${article.title}\`);
+    console.log(\`Snippet: \${article.content.substring(0, 200)}...\`);
 });`,
       },
       {
@@ -309,15 +301,16 @@ response.results.forEach(result => {
   -H "x-api-key: <your_api_key>" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "query": "renewable energy investment trends 2024"
+    "query": "latest news about monetary policy",
+    "included_sources": ["valyu/valyu-web-search"] # or leave this empty and we'll figure it out for you
   }'`,
       },
     ],
   },
   {
-    name: "Wiley",
+    name: "Wiley Research",
     src: "/wy.svg",
-    description: "Academic research from Wiley publications",
+    description: "Academic research from Wiley",
     snippets: [
       {
         language: "Python",
@@ -329,17 +322,15 @@ valyu = Valyu(api_key="<your_api_key>")
 response = valyu.search(
     "machine learning finance applications",
     included_sources=[
-        "valyu/wiley-finance-books", 
+        "valyu/wiley-finance-books",
         "valyu/wiley-finance-papers"
     ] # or leave this empty and we'll pick the best sources for you
 )
 
 # Access research papers
 for paper in response.results:
-    print(f"Title: {paper.title}")
-    print(f"Journal: {paper.metadata.get('journal')}")
-    print(f"DOI: {paper.metadata.get('doi')}")
-    print(f"Abstract: {paper.content[:300]}...")`,
+    print(f"DOI: {paper.doi}")
+    print(f"Content: {paper.content[:200]}...")`,
       },
       {
         language: "TypeScript",

@@ -38,6 +38,12 @@ const DEFAULT_COLORS = [
   "#9333ea", // Purple
 ] as const;
 
+const chartDebug = (...args: unknown[]) => {
+  if (process.env.NEXT_PUBLIC_APP_MODE === "development") {
+    console.log(...args);
+  }
+};
+
 interface DataPoint {
   x: string | number;
   y: number;
@@ -177,7 +183,7 @@ export function FinancialChart({
 
         // If both are valid dates, sort chronologically (earliest first)
         if (dateA && dateB) {
-          console.log(
+          chartDebug(
             `[Chart Sorting] Parsing dates: "${
               a.x
             }" -> ${dateA.toISOString()}, "${b.x}" -> ${dateB.toISOString()}`

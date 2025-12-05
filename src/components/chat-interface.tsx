@@ -2,63 +2,11 @@
 
 import { useChat } from "@ai-sdk/react";
 import { useQueryClient, useMutation } from "@tanstack/react-query";
-import React from "react";
-
-// Error Boundary for Chart Rendering
-class ChartErrorBoundary extends React.Component<
-  { children: React.ReactNode; callId: string },
-  { hasError: boolean; error?: Error }
-> {
-  constructor(props: { children: React.ReactNode; callId: string }) {
-    super(props);
-    this.state = { hasError: false };
-  }
-
-  static getDerivedStateFromError(error: Error) {
-    return { hasError: true, error };
-  }
-
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error(
-      `[Chart Error Boundary] Error in chart ${this.props.callId}:`,
-      error,
-      errorInfo
-    );
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-4">
-          <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
-            <AlertCircle className="h-4 w-4" />
-            <span className="font-medium">Chart Rendering Error</span>
-          </div>
-          <div className="text-sm text-red-600 dark:text-red-300">
-            Error: {this.state.error?.message || "Unknown error"}
-          </div>
-          <div className="mt-2">
-            <button
-              onClick={() =>
-                this.setState({ hasError: false, error: undefined })
-              }
-              className="text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-200 underline"
-            >
-              Try Again
-            </button>
-          </div>
-        </div>
-      );
-    }
-
-    return this.props.children;
-  }
-}
-import { MovingBorderButton } from "@/components/ui/moving-border";
 import {
   DefaultChatTransport,
   lastAssistantMessageIsCompleteWithToolCalls,
 } from "ai";
+import { NewsCarousel } from "@/components/news-carousel";
 import { HealthcareUIMessage } from "@/lib/types";
 import pdf from "pdf-parse";
 import { Button } from "@/components/ui/button";
@@ -97,7 +45,6 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { VirtualizedContentDialog } from "@/components/virtualized-content-dialog";
-import { NewsCarousel } from "@/components/news-carousel";
 import {
   useState,
   useRef,
@@ -120,7 +67,6 @@ import {
   Wrench,
   Check,
   CheckCircle,
-  XCircle,
   Copy,
   Clock,
   Book,
@@ -141,7 +87,7 @@ import "katex/dist/katex.min.css";
 import katex from "katex";
 import { FinancialChart } from "@/components/financial-chart";
 import { CitationTextRenderer } from "@/components/citation-text-renderer";
-import { CitationMap } from "@/lib/citation-utils";
+import type { Citation, CitationMap } from "@/lib/citation-utils";
 import ClinicalTrialsView from "@/components/ClinicalTrialsView";
 const JsonView = dynamic(() => import("@uiw/react-json-view"), {
   ssr: false,
@@ -170,6 +116,84 @@ import { openai } from "@ai-sdk/openai";
 // Debug toggles removed per request
 
 // Separate component for reasoning to avoid hook violations
+type CitationToolCategory = Citation["toolType"];
+
+const mapResultTypeToSavedItemType = (
+  type:
+    | "economics"
+    | "financial"
+    | "web"
+    | "wiley"
+    | "worldBank"
+    | "fred"
+    | "bls"
+    | "usaSpending"
+    | "document"
+    | "healthcare"
+): SavedItem["type"] => {
+  switch (type) {
+    case "economics":
+    case "worldBank":
+    case "fred":
+    case "bls":
+    case "usaSpending":
+      return "financial";
+    case "document":
+      return "web";
+    case "financial":
+    case "web":
+    case "wiley":
+    case "healthcare":
+      return type;
+    default:
+      return undefined;
+  }
+};
+
+const mapToolTypeToCitationCategory = (
+  toolType?: string
+): CitationToolCategory => {
+  switch (toolType) {
+    case "tool-webSearch":
+      return "web";
+    case "tool-economicsSearch":
+    case "tool-getFREDSeriesData":
+    case "tool-getBLSSeriesData":
+    case "tool-getWBDetails":
+    case "tool-getUSASpendingDetails":
+      return "financial";
+    case "tool-wileySearch":
+      return "wiley";
+    default:
+      return undefined;
+  }
+};
+
+type ChatLogLevel = "log" | "warn" | "error";
+
+const chatDebug = (...args: unknown[]) => {
+  if (process.env.NEXT_PUBLIC_APP_MODE !== "development") {
+    return;
+  }
+
+  if (
+    typeof args[0] === "string" &&
+    (args[0] === "log" || args[0] === "warn" || args[0] === "error")
+  ) {
+    const [level, ...rest] = args as [ChatLogLevel, ...unknown[]];
+    console[level](...rest);
+    return;
+  }
+
+  console.log(...args);
+};
+
+const scrollDebug = (...args: unknown[]) => {
+  if (process.env.NEXT_PUBLIC_APP_MODE === "development") {
+    chatDebug(...args);
+  }
+};
+
 const ReasoningComponent = ({
   part,
   messageId,
@@ -389,7 +413,20 @@ const markdownComponents = {
       {children}
     </div>
   ),
+  // Handle XML string tags from academic content
+  string: ({ children }: any) => (
+    <span className="font-mono text-sm bg-gray-100 dark:bg-gray-800 px-1 rounded">
+      {children}
+    </span>
+  ),
+  // Handle XML module tags from academic content
+  module: ({ children }: any) => (
+    <span className="font-mono text-sm bg-blue-100 dark:bg-blue-800/30 px-1 rounded">
+      {children}
+    </span>
+  ),
 };
+
 // Memoized Markdown renderer to avoid re-parsing on unrelated state updates
 const MemoizedMarkdown = memo(function MemoizedMarkdown({
   text,
@@ -421,23 +458,7 @@ const MemoizedMarkdown = memo(function MemoizedMarkdown({
 // Helper function to extract search results for carousel display
 const extractSearchResults = (jsonOutput: string) => {
   try {
-    console.log("[extractSearchResults] Input:", jsonOutput);
-
-    // Check if the output is a plain text error message or non-JSON content
-    if (
-      typeof jsonOutput === "string" &&
-      !jsonOutput.trim().startsWith("{") &&
-      !jsonOutput.trim().startsWith("[")
-    ) {
-      // This is likely a plain text error message or non-JSON content (like code execution output)
-      console.log(
-        "[extractSearchResults] Non-JSON content detected, returning empty array"
-      );
-      return [];
-    }
-
     const data = JSON.parse(jsonOutput);
-    console.log("[extractSearchResults] Parsed data:", data);
 
     if (data.results && Array.isArray(data.results)) {
       const mappedResults = data.results.map((result: any, index: number) => {
@@ -512,10 +533,23 @@ const extractSearchResults = (jsonOutput: string) => {
     }
     return [];
   } catch (error) {
-    console.warn("Failed to parse search results:", error);
-    console.warn("Raw output:", jsonOutput);
     return [];
   }
+};
+
+const safeParseJSON = (value: unknown) => {
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch (error) {
+      chatDebug("warn", "[Chat Interface] Failed to parse JSON output:", error);
+      return null;
+    }
+  }
+  if (value && typeof value === "object") {
+    return value;
+  }
+  return null;
 };
 
 // Search Result Card Component
@@ -526,7 +560,17 @@ export const SearchResultCard = ({
   onRemove,
 }: {
   result: any;
-  type: "web";
+  type:
+    | "economics"
+    | "financial"
+    | "web"
+    | "wiley"
+    | "worldBank"
+    | "fred"
+    | "bls"
+    | "usaSpending"
+    | "document"
+    | "healthcare";
   variant?: "default" | "saved";
   onRemove?: () => void;
 }) => {
@@ -555,7 +599,7 @@ export const SearchResultCard = ({
           : String(result.title ?? "Untitled Result"),
       url: result.url ?? undefined,
       source: result.source ?? undefined,
-      type,
+      type: mapResultTypeToSavedItemType(type),
       date: result.date ?? undefined,
       data: result,
     }),
@@ -873,16 +917,24 @@ export const SearchResultCard = ({
                   </span>
                 </div>
                 <div className="flex items-center justify-between text-xs text-gray-500 pl-2">
-                  <span className="truncate px-2 rounded text-xs bg-gray-100 dark:bg-gray-800 py-0.5 max-w-[150px]">
-                    {(() => {
-                      try {
-                        const urlObj = new URL(result.url);
-                        return urlObj.hostname.replace(/^www\./, "");
-                      } catch {
-                        return result.url;
-                      }
-                    })()}
-                  </span>
+                  {type === "wiley" ? (
+                    <img
+                      src="/wy.svg"
+                      alt="Wiley"
+                      className="w-10 h-10 dark:invert opacity-80"
+                    />
+                  ) : (
+                    <span className="truncate px-2 rounded text-xs bg-gray-100 dark:bg-gray-800 py-0.5 max-w-[150px]">
+                      {(() => {
+                        try {
+                          const urlObj = new URL(result.url);
+                          return urlObj.hostname.replace(/^www\./, "");
+                        } catch {
+                          return result.url;
+                        }
+                      })()}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -897,19 +949,20 @@ export const SearchResultCard = ({
           <div className="text-sm text-gray-600 dark:text-gray-400 space-y-2">
             <div className="flex items-center gap-2 flex-wrap">
               {/* <span>{result.source}</span> */}
+              {result.date && <span>• {result.date}</span>}
               {result.relevanceScore && (
                 <span className="text-xs bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">
                   {(result.relevanceScore * 100).toFixed(0)}% relevance
                 </span>
               )}
-              {result.doi && (
+              {type === "wiley" && result.doi && (
                 <span className="text-xs bg-amber-100 dark:bg-amber-800/30 text-amber-700 dark:text-amber-300 px-2 py-1 rounded">
                   DOI: {result.doi}
                 </span>
               )}
             </div>
 
-            {(result.authors || result.citation) && (
+            {type === "wiley" && (result.authors || result.citation) && (
               <div className="space-y-1">
                 {result.authors && result.authors.length > 0 && (
                   <div className="text-xs text-gray-600 dark:text-gray-400">
@@ -1194,6 +1247,7 @@ const PreviouslyFetchedCard = ({
 };
 
 // Search Results Carousel Component
+
 const SearchResultsCarousel = ({
   results,
   type,
@@ -1201,7 +1255,17 @@ const SearchResultsCarousel = ({
   toolName,
 }: {
   results: any[];
-  type: "web";
+  type:
+    | "economics"
+    | "financial"
+    | "web"
+    | "wiley"
+    | "worldBank"
+    | "fred"
+    | "bls"
+    | "usaSpending"
+    | "document"
+    | "healthcare";
   messageId: string;
   toolName?: string;
 }) => {
@@ -1234,10 +1298,18 @@ const SearchResultsCarousel = ({
     }
   };
 
+  const normalizedResults = useMemo(
+    () =>
+      (results || []).filter(
+        (r): r is Record<string, any> => r !== null && typeof r === "object"
+      ),
+    [results]
+  );
+
   const dedupedResults = useMemo(() => {
     const seenLocal = new Set<string>();
     const out: any[] = [];
-    for (const r of results || []) {
+    for (const r of normalizedResults) {
       const id = String(r?.id ?? "");
       const key =
         id ||
@@ -1252,7 +1324,7 @@ const SearchResultsCarousel = ({
       out.push(r);
     }
     return out;
-  }, [results]);
+  }, [normalizedResults]);
 
   // Extract all images from results
   const allImages: { url: string; title: string; sourceUrl: string }[] = [];
@@ -1327,18 +1399,24 @@ const SearchResultsCarousel = ({
           className="flex gap-2 sm:gap-3 overflow-x-auto scrollbar-hide py-1 sm:py-2 px-1 sm:px-2"
           style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
         >
-          {dedupedResults.map((result) => {
-            const resultId = String(result?.id ?? "");
+          {dedupedResults.map((result, index) => {
+            if (!result) return null;
+            const resultId = String(
+              result.id ??
+                result.nctId ??
+                result.doi ??
+                normalizeUrlClient(result.url) ??
+                `${type}-${index}`
+            );
+            const enrichedResult = { ...result, id: resultId };
             // Register first-seen results in the session cache
-            if (resultId) {
-              if (!seen.has(resultId)) {
-                seen.setIfAbsent({
-                  id: resultId,
-                  tool: toolName || type,
-                  messageId,
-                  result,
-                });
-              }
+            if (resultId && !seen.has(resultId)) {
+              seen.setIfAbsent({
+                id: resultId,
+                tool: toolName || type,
+                messageId,
+                result: enrichedResult,
+              });
             }
 
             // If we've seen this result in a previous message, show a compact reference card
@@ -1350,8 +1428,8 @@ const SearchResultsCarousel = ({
             if (isPreviouslyFetched) {
               return (
                 <PreviouslyFetchedCard
-                  key={result.id}
-                  result={result}
+                  key={resultId}
+                  result={enrichedResult}
                   originalMessageId={seenEntry!.messageId}
                   toolName={type}
                 />
@@ -1360,30 +1438,30 @@ const SearchResultsCarousel = ({
 
             // Check if this is clinical trials data
             if (
-              result.source === "valyu/valyu-clinical-trials" &&
-              result.fullContent
+              enrichedResult.source === "valyu/valyu-clinical-trials" &&
+              enrichedResult.fullContent
             ) {
               // Try to parse the content to check if it's valid clinical trial JSON
               try {
                 const parsed =
-                  typeof result.fullContent === "string"
-                    ? JSON.parse(result.fullContent)
-                    : result.fullContent;
+                  typeof enrichedResult.fullContent === "string"
+                    ? JSON.parse(enrichedResult.fullContent)
+                    : enrichedResult.fullContent;
                 if (parsed.nct_id || parsed.brief_title) {
                   // This is clinical trial data, use the special view
                   return (
                     <div
-                      key={result.id}
-                      data-result-id={result.id}
+                      key={enrichedResult.id}
+                      data-result-id={enrichedResult.id}
                       data-tool={type}
                       className="min-w-[280px] sm:min-w-[320px] max-w-[320px] sm:max-w-[380px] flex-shrink-0"
                     >
                       <ClinicalTrialsView
                         result={{
-                          content: result.fullContent,
-                          title: result.title,
-                          url: result.url,
-                          source: result.source,
+                          content: enrichedResult.fullContent,
+                          title: enrichedResult.title,
+                          url: enrichedResult.url,
+                          source: enrichedResult.source,
                         }}
                         mode="preview"
                         height="300px"
@@ -1397,7 +1475,11 @@ const SearchResultsCarousel = ({
             }
 
             return (
-              <SearchResultCard key={result.id} result={result} type={type} />
+              <SearchResultCard
+                key={enrichedResult.id}
+                result={enrichedResult}
+                type={type}
+              />
             );
           })}
         </div>
@@ -1596,11 +1678,6 @@ export function ChatInterface({
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
-  const [chartRenderKey, setChartRenderKey] = useState<number>(0);
-  const [forceChartCreation, setForceChartCreation] = useState<boolean>(false);
-  const [expandedFredResults, setExpandedFredResults] = useState<Set<string>>(
-    new Set()
-  );
   const [isRateLimited, setIsRateLimited] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | undefined>(
     undefined
@@ -1611,8 +1688,6 @@ export function ChatInterface({
 
   const [isFormAtBottom, setIsFormAtBottom] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
-  const [finalAnswerProduced, setFinalAnswerProduced] = useState(false);
-  const finalAnswerTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [isStartingNewChat, setIsStartingNewChat] = useState(false);
   const [showLibraryCard, setShowLibraryCard] = useState(false);
   const [libraryCollectionId, setLibraryCollectionId] = useState<string | null>(
@@ -1626,26 +1701,6 @@ export function ChatInterface({
     Record<string, SavedItem[]>
   >({});
   const [fastMode, setFastMode] = useState(false);
-  const [selectedCountry, setSelectedCountry] = useState("global");
-
-  const countries = [
-    { value: "global", label: "🌍 Global" },
-    { value: "us", label: "🇺🇸 United States" },
-    { value: "uk", label: "🇬🇧 United Kingdom" },
-    { value: "germany", label: "🇩🇪 Germany" },
-    { value: "france", label: "🇫🇷 France" },
-    { value: "japan", label: "🇯🇵 Japan" },
-    { value: "china", label: "🇨🇳 China" },
-    { value: "india", label: "🇮🇳 India" },
-    { value: "canada", label: "🇨🇦 Canada" },
-    { value: "australia", label: "🇦🇺 Australia" },
-    { value: "singapore", label: "🇸🇬 Singapore" },
-    { value: "mexico", label: "🇲🇽 Mexico" },
-    { value: "south-korea", label: "🇰🇷 South Korea" },
-    { value: "italy", label: "🇮🇹 Italy" },
-    { value: "spain", label: "🇪🇸 Spain" },
-    { value: "russia", label: "🇷🇺 Russia" },
-  ];
   const [inputMenuOpen, setInputMenuOpen] = useState(false);
   const [showFileDropzone, setShowFileDropzone] = useState(false);
   const [dropzoneFiles, setDropzoneFiles] = useState<File[] | undefined>(
@@ -1665,7 +1720,6 @@ export function ChatInterface({
   const libraryContextRef = useRef<SavedItem[]>([]);
   const lastSentContextRef = useRef<SavedItem[]>([]);
   const messageIdsRef = useRef<string[]>([]);
-  const lastReloadTimeRef = useRef<number>(0);
   const effectiveFastMode = fastModeProp ?? fastMode;
   const setEffectiveFastMode = onFastModeChange ?? setFastMode;
   // Ref to always send the freshest fastMode to the API
@@ -1842,7 +1896,7 @@ export function ChatInterface({
     async (files: File[]) => {
       if (!files?.length) return;
 
-      console.log(
+      chatDebug(
         "[Chat Interface] Processing files:",
         files.map((f) => f.name)
       );
@@ -1869,7 +1923,7 @@ export function ChatInterface({
             const base = createSavedItemFromFile(file);
             const extractedText = result.extractedText;
 
-            console.log(
+            chatDebug(
               `[Chat Interface] File ${file.name} extracted text length:`,
               extractedText?.length || 0
             );
@@ -1891,19 +1945,12 @@ export function ChatInterface({
 
             setLibraryContextItems((prev) => {
               const next = [...prev, newItem];
-              console.log(
-                "[Chat Interface] Updated library context items:",
-                next.length
-              );
               return next;
             });
-          } else {
-            console.log(
-              `[Chat Interface] Upload was cancelled or failed for ${file.name}`
-            );
           }
         } catch (error) {
-          console.error(
+          chatDebug(
+            "error",
             `[Chat Interface] Error processing file ${file.name}:`,
             error
           );
@@ -2081,13 +2128,13 @@ export function ChatInterface({
     (question: string, items: SavedItem[]) => {
       if (items.length === 0) return question;
 
-      console.log(
+      chatDebug(
         "[Chat Interface] Building context instruction with items:",
         items.length
       );
       items.forEach((item, index) => {
         const details = summariseSavedItem(item);
-        console.log(
+        chatDebug(
           `[Chat Interface] Context item ${index + 1}: ${
             item.title
           }, content length: ${details?.length || 0}`
@@ -2111,7 +2158,7 @@ export function ChatInterface({
         "\n\n"
       )}\n\n[USER PROMPT]\n${question}`;
 
-      console.log(
+      chatDebug(
         "[Chat Interface] Enriched text length:",
         enrichedText.length
       );
@@ -2329,8 +2376,8 @@ export function ChatInterface({
     // Create a smart title from the first user message
     const cleaned = firstMessage.trim();
 
-    // Financial keywords to prioritize in titles
-    const financialKeywords = [
+    // Economics keywords to prioritize in titles
+    const economicsKeywords = [
       "stock",
       "stocks",
       "share",
@@ -2400,7 +2447,7 @@ export function ChatInterface({
       if (trimmed.length > 10 && trimmed.length <= 50) {
         // Check if this sentence contains financial keywords or tickers
         const hasFinancialContext =
-          financialKeywords.some((keyword) =>
+          economicsKeywords.some((keyword) =>
             trimmed.toLowerCase().includes(keyword.toLowerCase())
           ) || tickers.some((ticker) => trimmed.includes(ticker));
 
@@ -2466,7 +2513,7 @@ export function ChatInterface({
 
         if (response.ok) {
           const { session: newSession } = await response.json();
-          console.log(
+          chatDebug(
             "[Chat Interface] Created new session quickly:",
             newSession.id
           );
@@ -2492,14 +2539,14 @@ export function ChatInterface({
                   },
                   body: JSON.stringify({ title: aiTitle }),
                 });
-                console.log(
+                chatDebug(
                   "[Chat Interface] Updated session title with AI:",
                   aiTitle
                 );
               }
             })
             .catch(() => {
-              console.log(
+              chatDebug(
                 "[Chat Interface] AI title generation failed, keeping fallback"
               );
             });
@@ -2507,7 +2554,7 @@ export function ChatInterface({
           return newSession.id;
         }
       } catch (error) {
-        console.error("[Chat Interface] Failed to create session:", error);
+        chatDebug("error", "[Chat Interface] Failed to create session:", error);
       }
       return null;
     },
@@ -2525,37 +2572,22 @@ export function ChatInterface({
           if (selectedModel) {
             headers["x-ollama-model"] = selectedModel;
           }
-          console.log(
+          chatDebug(
             "[Chat Interface] Preparing request, user:",
             user?.id || "anonymous"
           );
-          console.log("[prepareSendMessagesRequest] fastMode =", fastMode);
-          const clonedMessages = Array.isArray(messages)
-            ? messages.map((message) => ({
-                ...message,
-                parts: Array.isArray(message.parts)
-                  ? message.parts.map((part) =>
-                      part && typeof part === "object"
-                        ? { ...part }
-                        : part
-                    )
-                  : message.parts,
-              }))
-            : messages;
-
-          let enrichedMessages = clonedMessages;
-          let attachmentsMerged = false;
+          let enrichedMessages = messages;
           if (libraryContextRef.current.length > 0) {
             const pendingContext = libraryContextRef.current;
             lastSentContextRef.current = pendingContext;
             libraryContextRef.current = [];
 
-            const lastUserIndex = [...clonedMessages]
+            const lastUserIndex = [...messages]
               .map((msg) => msg.role)
               .lastIndexOf("user");
 
             if (lastUserIndex !== -1) {
-              enrichedMessages = clonedMessages.map((message, index) => {
+              enrichedMessages = messages.map((message, index) => {
                 if (index !== lastUserIndex) return message;
 
                 const originalText = (() => {
@@ -2610,7 +2642,6 @@ export function ChatInterface({
 
           // Convert any pending dropped files into base64 attachments for the API
           let attachments: any[] = [];
-          let decodedAttachmentParts: any[] = [];
           try {
             if (Array.isArray(dropzoneFiles) && dropzoneFiles.length > 0) {
               attachments = await Promise.all(
@@ -2680,114 +2711,77 @@ export function ChatInterface({
                   };
                 })
               );
-
-              decodedAttachmentParts = attachments.map((att) => {
-                try {
-                  const binary =
-                    att.dataBase64 != null
-                      ? Buffer.from(att.dataBase64, "base64")
-                      : null;
-
-                  if (!binary) {
-                    return null;
-                  }
-
-                  if (att.kind === "image") {
-                    return {
-                      type: "image",
-                      image: binary,
-                      mimeType: att.mediaType || "image/png",
-                      __fromClientAttachment: true,
-                    };
-                  }
-
-                  return {
-                    type: "file",
-                    data: binary,
-                    mediaType:
-                      att.mediaType || "application/octet-stream",
-                    filename: att.name || undefined,
-                    __fromClientAttachment: true,
-                  };
-                } catch (attachmentError) {
-                  console.warn(
-                    "[Chat Interface] Failed to decode attachment part",
-                    attachmentError
-                  );
-                  return null;
-                }
-              }).filter(Boolean);
             }
           } catch (e) {
             console.warn("Failed to serialize attachments", e);
           }
 
-          if (decodedAttachmentParts.length > 0 && Array.isArray(enrichedMessages)) {
-            const lastUserIndex = enrichedMessages
-              .map((msg) => msg.role)
+          if (
+            attachments.length > 0 &&
+            Array.isArray(enrichedMessages) &&
+            enrichedMessages.length > 0
+          ) {
+            const sourceMessages =
+              enrichedMessages === messages ? messages : enrichedMessages;
+
+            const lastIdx = sourceMessages
+              .map((m: any) => m.role)
               .lastIndexOf("user");
+            const targetIdx =
+              lastIdx >= 0 ? lastIdx : sourceMessages.length - 1;
+            const targetMessage = sourceMessages[targetIdx] as any;
 
-            if (lastUserIndex !== -1) {
-              const targetMessage = enrichedMessages[lastUserIndex];
-
-              if (targetMessage) {
-                const updatedMessage: any = {
-                  ...targetMessage,
+            if (targetMessage) {
+              const decodedParts = attachments.map((att: any) => {
+                const data = Buffer.from(att.dataBase64 || "", "base64");
+                if (att.kind === "image") {
+                  return {
+                    type: "image",
+                    image: data,
+                    mimeType: att.mediaType || "image/png",
+                  };
+                }
+                return {
+                  type: "file",
+                  data,
+                  mediaType: att.mediaType || "application/octet-stream",
+                  filename: att.name || undefined,
                 };
+              });
 
-                const cloneParts = (parts: any) =>
-                  Array.isArray(parts)
-                    ? parts.map((part: any) =>
-                        part && typeof part === "object"
-                          ? { ...part }
-                          : part
-                      )
-                    : parts;
+              const updatedMessage = { ...targetMessage };
 
-                let existingParts: any[] = [];
-
-                if (Array.isArray(updatedMessage.parts)) {
-                  existingParts = cloneParts(updatedMessage.parts);
-                } else if (
-                  Array.isArray((updatedMessage as any).content)
-                ) {
-                  existingParts = cloneParts(
-                    (updatedMessage as any).content
-                  );
-                } else if (typeof updatedMessage.content === "string") {
-                  existingParts = [
-                    { type: "text", text: updatedMessage.content },
-                  ];
-                } else if (typeof updatedMessage.text === "string") {
-                  existingParts = [
-                    { type: "text", text: updatedMessage.text },
-                  ];
-                }
-
-                if (existingParts.length === 0) {
-                  existingParts = [];
-                }
-
+              if (Array.isArray(targetMessage.parts)) {
                 updatedMessage.parts = [
-                  ...existingParts,
-                  ...decodedAttachmentParts,
+                  ...targetMessage.parts,
+                  ...decodedParts,
+                ];
+              } else if (typeof targetMessage.content === "string") {
+                updatedMessage.parts = [
+                  { type: "text", text: targetMessage.content },
+                  ...decodedParts,
                 ];
                 delete updatedMessage.content;
-                attachmentsMerged = true;
-
-                enrichedMessages = enrichedMessages.map((message, idx) =>
-                  idx === lastUserIndex ? updatedMessage : message
-                );
+              } else if (Array.isArray(targetMessage.content)) {
+                updatedMessage.content = [
+                  ...targetMessage.content,
+                  ...decodedParts,
+                ];
+              } else {
+                updatedMessage.parts = decodedParts;
               }
+
+              enrichedMessages = sourceMessages.map((msg, index) =>
+                index === targetIdx ? updatedMessage : msg
+              );
             }
           }
-
           if (user) {
             const supabase = createClient();
             const {
               data: { session },
             } = await supabase.auth.getSession();
-            console.log(
+            chatDebug(
               "[Chat Interface] Session access_token exists:",
               !!session?.access_token
             );
@@ -2804,7 +2798,6 @@ export function ChatInterface({
               sessionId: sessionIdRef.current,
               fastMode: fastModeRef.current,
               attachments,
-              attachmentsMerged,
             },
             headers,
           };
@@ -2832,314 +2825,31 @@ export function ChatInterface({
     transport,
     // Automatically submit when all tool results are available
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
-    onFinish: (message) => {
-      console.log("[ChatInterface] 🎯 onFinish called:", {
-        message,
-        messageId: message?.message?.id || "unknown",
-        messageRole: message?.message?.role || "unknown",
-        messageParts: message?.message?.parts?.length || 0,
-        currentMessagesCount: messages.length,
-        status,
-      });
-
-      // Check if the message has substantial text content
-      const textParts =
-        message?.message?.parts?.filter((part) => part.type === "text") || [];
-      const hasSubstantialText = textParts.some(
-        (part) => (part as any).text && (part as any).text.length > 50
-      );
-
-      console.log("[ChatInterface] onFinish text analysis:", {
-        textPartsCount: textParts.length,
-        hasSubstantialText,
-        textLengths: textParts.map((part) => (part as any).text?.length || 0),
-      });
-
-      if (hasSubstantialText) {
-        console.log("[ChatInterface] ✅ onFinish - FINAL ANSWER CONFIRMED");
-      } else {
-        console.log("[ChatInterface] ❌ onFinish - No substantial text found");
-      }
-
+    onFinish: () => {
       // Sync with server when chat completes (server has definitely processed increment by now)
       if (user) {
-        console.log(
+        chatDebug(
           "[Chat Interface] Chat finished, syncing rate limit with server"
         );
         queryClient.invalidateQueries({ queryKey: ["rateLimit"] });
       }
     },
-    onError: (error) => {
-      // Ultra-aggressive empty error detection and suppression
-      const isEmptyError =
-        !error ||
-        error === null ||
-        error === undefined ||
-        (typeof error === "object" && Object.keys(error).length === 0) ||
-        (typeof error === "string" && (error as string).trim() === "") ||
-        (typeof error === "object" && JSON.stringify(error) === "{}") ||
-        (typeof error === "object" && JSON.stringify(error) === "null") ||
-        (typeof error === "object" && JSON.stringify(error) === "undefined");
-
-      if (isEmptyError) {
-        console.warn(
-          "[ChatInterface] Empty error detected - completely suppressing"
-        );
-        return;
-      }
-
-      console.error("[ChatInterface] Chat error:", error);
-
-      // Handle different types of error objects
-      let errorMessage = "Unknown error";
-      let errorString = "{}";
-
-      if (error instanceof Error) {
-        errorMessage = error.message;
-        errorString = error.toString();
-      } else if (typeof error === "string") {
-        errorMessage = error;
-        errorString = error;
-      } else if (error && typeof error === "object") {
-        errorMessage =
-          (error as any).message || (error as any).toString() || "Object error";
-        errorString = JSON.stringify(error, null, 2);
-      } else {
-        errorMessage = String(error) || "Unknown error";
-        errorString = String(error) || "{}";
-      }
-
-      console.error("[ChatInterface] Error details:", {
-        message: errorMessage,
-        cause: error?.cause || "No cause",
-        stack: error?.stack || "No stack",
-        currentSessionId,
-        status,
-        errorType: typeof error,
-        errorKeys: Object.keys(error || {}),
-        errorString: errorString,
-        isErrorObject: error instanceof Error,
-        errorConstructor: error?.constructor?.name,
-      });
-
-      // If there's a network error or duplicate item error, try to reload the session
-      const isNetworkError =
-        errorMessage.includes("terminated") ||
-        errorMessage.includes("closed") ||
-        errorMessage.includes("UND_ERR_SOCKET") ||
-        errorMessage.includes("failed to pipe response") ||
-        errorMessage.includes("NetworkError") ||
-        errorMessage.includes("fetch") ||
-        errorString.includes("terminated") ||
-        errorString.includes("closed");
-
-      const isDuplicateError =
-        errorMessage.includes("Duplicate item found") ||
-        errorString.includes("Duplicate item found");
-
-      // Also check for empty error objects that might indicate a network issue
-      const shouldReload =
-        currentSessionId && (isNetworkError || isDuplicateError);
-
-      // Empty error detection is handled at the top of the function
-
-      if (shouldReload) {
-        // Check if we already have a recent assistant message to avoid reloading successful responses
-        const lastMessage = messages[messages.length - 1];
-        const hasRecentAssistantMessage =
-          lastMessage?.role === "assistant" &&
-          lastMessage?.parts &&
-          lastMessage.parts.length > 0;
-
-        // Check if there are any tool calls in progress or recently completed
-        const hasToolCallsInProgress = lastMessage?.parts?.some(
-          (part: any) =>
-            part.type?.startsWith("tool-") &&
-            (part.state === "input-streaming" ||
-              part.state === "input-available" ||
-              part.state === "output-available")
-        );
-
-        if (!hasRecentAssistantMessage && !hasToolCallsInProgress) {
-          const now = Date.now();
-          const timeSinceLastReload = now - lastReloadTimeRef.current;
-
-          // Prevent reloading if we've reloaded within the last 10 seconds
-          if (timeSinceLastReload > 10000) {
-            console.log(
-              "[ChatInterface] Error detected, reloading session to get saved message",
-              {
-                isNetworkError,
-                isDuplicateError,
-                errorMessage,
-                timeSinceLastReload,
-              }
-            );
-            lastReloadTimeRef.current = now;
-            setTimeout(() => {
-              console.log(
-                "[ChatInterface] Reloading session:",
-                currentSessionId
-              );
-              loadSessionMessages(currentSessionId);
-            }, 2000);
-          } else {
-            console.log(
-              "[ChatInterface] Error detected but recent reload within 10s, skipping reload",
-              { timeSinceLastReload }
-            );
-          }
-        } else {
-          console.log(
-            "[ChatInterface] Error detected but recent assistant message or tool calls found, skipping reload",
-            { isNetworkError, isDuplicateError, errorMessage }
-          );
-        }
-      }
-    },
   });
 
-  // Separate useEffect for streaming timeout
   useEffect(() => {
-    if (status === "streaming" && currentSessionId) {
-      const lastMessage = messages[messages.length - 1];
-      const hasRecentAssistantMessage =
-        lastMessage?.role === "assistant" &&
-        lastMessage?.parts &&
-        lastMessage.parts.length > 0;
-
-      // Check if there are any tool calls in progress or recently completed
-      const hasToolCallsInProgress = lastMessage?.parts?.some(
-        (part: any) =>
-          part.type?.startsWith("tool-") &&
-          (part.state === "input-streaming" ||
-            part.state === "input-available" ||
-            part.state === "output-available")
-      );
-
-      if (!hasRecentAssistantMessage && !hasToolCallsInProgress) {
-        const now = Date.now();
-        const timeSinceLastReload = now - lastReloadTimeRef.current;
-
-        // Prevent reloading if we've reloaded within the last 10 seconds
-        if (timeSinceLastReload > 10000) {
-          const timeout = setTimeout(() => {
-            console.log(
-              "[ChatInterface] Streaming timeout, checking for saved message"
-            );
-            lastReloadTimeRef.current = Date.now();
-            loadSessionMessages(currentSessionId);
-          }, 30000); // 30 seconds timeout
-
-          return () => clearTimeout(timeout);
-        } else {
-          console.log(
-            "[ChatInterface] Streaming timeout but recent reload within 10s, skipping timeout check",
-            { timeSinceLastReload }
-          );
-        }
-      } else {
-        console.log(
-          "[ChatInterface] Streaming but recent assistant message found, skipping timeout check"
-        );
-      }
-    }
-  }, [status, currentSessionId, messages.length]);
-
-  // Separate useEffect for error handling
-  useEffect(() => {
-    if (status === "error" && currentSessionId && messages.length > 0) {
-      const lastMessage = messages[messages.length - 1];
-      const hasRecentAssistantMessage =
-        lastMessage?.role === "assistant" &&
-        lastMessage?.parts &&
-        lastMessage.parts.length > 0;
-
-      // Check if there are any tool calls in progress or recently completed
-      const hasToolCallsInProgress = lastMessage?.parts?.some(
-        (part: any) =>
-          part.type?.startsWith("tool-") &&
-          (part.state === "input-streaming" ||
-            part.state === "input-available" ||
-            part.state === "output-available")
-      );
-
-      if (!hasRecentAssistantMessage && !hasToolCallsInProgress) {
-        const now = Date.now();
-        const timeSinceLastReload = now - lastReloadTimeRef.current;
-
-        // Prevent reloading if we've reloaded within the last 10 seconds
-        if (timeSinceLastReload > 10000) {
-          console.log(
-            "[ChatInterface] Error status detected, reloading session to get saved messages"
-          );
-          lastReloadTimeRef.current = now;
-          setTimeout(() => {
-            loadSessionMessages(currentSessionId);
-          }, 1000);
-        } else {
-          console.log(
-            "[ChatInterface] Error status detected but recent reload within 10s, skipping reload",
-            { timeSinceLastReload }
-          );
-        }
-      } else {
-        console.log(
-          "[ChatInterface] Error status but recent assistant message found, skipping reload"
-        );
-      }
-    }
-  }, [status, currentSessionId, messages.length]);
-
-  // Separate useEffect for message logging and context management
-  useEffect(() => {
-    console.log("[ChatInterface] Messages state updated:", {
-      messageCount: messages.length,
-      status,
-      lastMessage: messages[messages.length - 1],
-      allMessageIds: messages.map((m) => m.id),
-      lastMessageParts: messages[messages.length - 1]?.parts?.length,
-      lastMessageRole: messages[messages.length - 1]?.role,
-    });
-
-    // Log tool calls in the last message
-    const lastMessage = messages[messages.length - 1];
-    if (lastMessage?.parts) {
-      const toolCalls = lastMessage.parts.filter((part) =>
-        part.type?.startsWith("tool-")
-      );
-      if (toolCalls.length > 0) {
-        console.log("[ChatInterface] Tool calls in last message:", {
-          messageId: lastMessage.id,
-          toolCallCount: toolCalls.length,
-          toolCalls: toolCalls.map((tc) => ({
-            type: tc.type,
-            state: (tc as any).state,
-            callId: (tc as any).toolCallId,
-            hasInput: !!(tc as any).input,
-            hasOutput: !!(tc as any).output,
-          })),
-        });
-      }
-    }
-
     const prevIds = messageIdsRef.current;
     const currentIds = messages.map((msg) => msg.id);
-    const idsUnchanged =
-      prevIds.length === currentIds.length &&
-      currentIds.every((id, index) => id === prevIds[index]);
-    const hasPendingContext = lastSentContextRef.current.length > 0;
-
-    if (idsUnchanged && !hasPendingContext) {
-      messageIdsRef.current = currentIds;
-      return;
-    }
-
     const newUserMessage = [...messages]
       .reverse()
       .find((msg) => !prevIds.includes(msg.id) && msg.role === "user");
 
-    if (!hasPendingContext) {
+    const idsChanged =
+      prevIds.length !== currentIds.length ||
+      prevIds.some((id, index) => id !== currentIds[index]);
+    const hasPendingContext =
+      !!newUserMessage && lastSentContextRef.current.length > 0;
+
+    if (!idsChanged && !hasPendingContext) {
       messageIdsRef.current = currentIds;
       return;
     }
@@ -3211,22 +2921,24 @@ export function ChatInterface({
           try {
             sessionData = await response.json();
           } catch (jsonError) {
-            console.error(
+            chatDebug(
+              "error",
               "[Chat Interface] JSON parsing error when loading session:",
               jsonError
             );
-            console.error("[Chat Interface] Response status:", response.status);
-            console.error(
+            chatDebug("error", "[Chat Interface] Response status:", response.status);
+            chatDebug(
+              "error",
               "[Chat Interface] Response headers:",
               Object.fromEntries(response.headers.entries())
             );
             const responseText = await response.text();
-            console.error("[Chat Interface] Response text:", responseText);
+            chatDebug("error", "[Chat Interface] Response text:", responseText);
             throw new Error("Failed to parse session data");
           }
 
           const { messages: sessionMessages } = sessionData;
-          console.log(
+          chatDebug(
             "[Chat Interface] Loaded session messages:",
             sessionMessages.length
           );
@@ -3281,7 +2993,7 @@ export function ChatInterface({
           setTimeout(() => {
             const c = messagesContainerRef.current;
             if (c) {
-              console.log(
+              chatDebug(
                 "[Chat Interface] Scrolling to bottom after session load"
               );
               c.scrollTo({ top: c.scrollHeight, behavior: "smooth" });
@@ -3293,7 +3005,7 @@ export function ChatInterface({
           }, 500);
         }
       } catch (error) {
-        console.error("[Chat Interface] Failed to load session:", error);
+        chatDebug("error", "[Chat Interface] Failed to load session:", error);
       } finally {
         setIsLoadingSession(false);
       }
@@ -3316,7 +3028,7 @@ export function ChatInterface({
   useEffect(() => {
     if (!sessionId || !user) {
       if (sessionId && !user) {
-        console.log(
+        chatDebug(
           "[Chat Interface] Waiting for authenticated user before loading session"
         );
       }
@@ -3324,7 +3036,7 @@ export function ChatInterface({
     }
 
     if (sessionId !== currentSessionId) {
-      console.log("[Chat Interface] Loading session:", sessionId);
+      chatDebug("[Chat Interface] Loading session:", sessionId);
       loadSessionMessages(sessionId);
     }
   }, [sessionId, user, currentSessionId, loadSessionMessages]);
@@ -3334,10 +3046,10 @@ export function ChatInterface({
     if (sessionId !== undefined) return;
     if (!currentSessionId) return;
 
-    console.log("[Chat Interface] Clearing for new chat");
+    chatDebug("[Chat Interface] Clearing for new chat");
 
     if (status === "streaming" || status === "submitted") {
-      console.log("[Chat Interface] Stopping ongoing chat for new chat");
+      chatDebug("[Chat Interface] Stopping ongoing chat for new chat");
       stop();
     }
 
@@ -3351,120 +3063,7 @@ export function ChatInterface({
   }, [sessionId, currentSessionId, status, stop, onNewChat]);
 
   useEffect(() => {
-    console.log("Messages updated:", messages);
-  }, [messages]);
-
-  // Force chart re-render when chart data is available
-  useEffect(() => {
-    const hasChartData = messages.some((message) =>
-      message.parts?.some(
-        (part: any) =>
-          part.type === "tool-createChart" &&
-          part.state === "output-available" &&
-          part.output
-      )
-    );
-
-    if (hasChartData) {
-      console.log(`[Chart Rendering] Chart data detected, forcing re-render`);
-      setChartRenderKey((prev) => prev + 1);
-    }
-
-    // Additional debugging for all tool calls
-    messages.forEach((message, messageIndex) => {
-      if (message.parts) {
-        message.parts.forEach((part: any, partIndex: number) => {
-          if (part.type === "tool-createChart") {
-            console.log(
-              `[Chart Debug] Message ${messageIndex}, Part ${partIndex}:`,
-              {
-                type: part.type,
-                state: part.state,
-                hasOutput: !!part.output,
-                outputKeys: part.output ? Object.keys(part.output) : [],
-                dataSeriesCount: part.output?.dataSeries?.length || 0,
-                title: part.output?.title || "No title",
-              }
-            );
-          }
-        });
-      }
-    });
-
-    // Check for World Bank data that needs charting
-    const hasWorldBankData = messages.some((message) =>
-      message.parts?.some(
-        (part: any) =>
-          part.type === "tool-economicsSearch" &&
-          part.state === "output-available" &&
-          part.output &&
-          (part.output.includes("World Bank") ||
-            part.output.includes("GDP per capita"))
-      )
-    );
-
-    if (hasWorldBankData && !forceChartCreation) {
-      console.log(
-        `[Chart Creation] World Bank data detected, forcing chart creation`
-      );
-      setForceChartCreation(true);
-      // Trigger a new message to create the chart
-      setTimeout(() => {
-        sendMessage({
-          text: "Please create a chart with the World Bank GDP per capita data that was just fetched. Show USA, India, and UK data from 1990-2024.",
-        });
-      }, 1000);
-    }
-
-    // Check if model is preparing data but hasn't created chart yet
-    const isPreparingData = messages.some((message) =>
-      message.parts?.some(
-        (part: any) =>
-          part.type === "text" &&
-          part.text &&
-          part.text.includes("Preparing data for charting")
-      )
-    );
-
-    const hasChartToolCall = messages.some((message) =>
-      message.parts?.some((part: any) => part.type === "tool-createChart")
-    );
-
-    if (isPreparingData && !hasChartToolCall && !forceChartCreation) {
-      console.log(
-        `[Chart Creation] Model is preparing data but no chart tool call detected, forcing chart creation`
-      );
-      setForceChartCreation(true);
-      setTimeout(() => {
-        sendMessage({
-          text: "Create the chart now with the data you prepared.",
-        });
-      }, 2000);
-    }
-
-    // Check for stuck chart creation (model says preparing but no progress)
-    const lastMessage = messages[messages.length - 1];
-    const isStuckPreparing =
-      lastMessage &&
-      lastMessage.parts?.some(
-        (part: any) =>
-          part.type === "text" &&
-          part.text &&
-          part.text.includes("Preparing data for charting")
-      ) &&
-      !hasChartToolCall;
-
-    if (isStuckPreparing && !forceChartCreation) {
-      console.log(
-        `[Chart Creation] Model appears stuck preparing data, forcing chart creation`
-      );
-      setForceChartCreation(true);
-      setTimeout(() => {
-        sendMessage({
-          text: "Stop preparing and create the chart immediately with the World Bank GDP per capita data. Use the createChart tool now.",
-        });
-      }, 3000);
-    }
+    chatDebug("Messages updated:", messages);
   }, [messages]);
 
   // Check rate limit status
@@ -3496,7 +3095,7 @@ export function ChatInterface({
   // Handle rate limit errors
   useEffect(() => {
     if (error) {
-      console.log("[Chat Interface] Error occurred:", error);
+      chatDebug("[Chat Interface] Error occurred:", error);
 
       // Check if it's a rate limit error
       if (
@@ -3525,141 +3124,9 @@ export function ChatInterface({
 
   // Notify parent component about message state changes
   useEffect(() => {
-    console.log("[Chat Interface] Messages changed, count:", messages.length);
+    chatDebug("[Chat Interface] Messages changed, count:", messages.length);
     onMessagesChange?.(messages.length > 0);
-
-    // Reset final answer state when messages are cleared
-    if (messages.length === 0) {
-      setFinalAnswerProduced(false);
-    }
   }, [messages.length]); // Remove onMessagesChange from dependencies to prevent infinite loops
-
-  // Comprehensive logging for final answer tracking
-  useEffect(() => {
-    console.log("[ChatInterface] Status/Messages change detected:", {
-      status,
-      messagesLength: messages.length,
-      lastMessageRole: messages[messages.length - 1]?.role,
-      lastMessageParts: messages[messages.length - 1]?.parts?.length || 0,
-    });
-
-    if (status === "ready" && messages.length > 0) {
-      const lastMessage = messages[messages.length - 1];
-      console.log("[ChatInterface] Last message details:", {
-        role: lastMessage?.role,
-        partsCount: lastMessage?.parts?.length || 0,
-        parts: lastMessage?.parts?.map((part) => ({
-          type: part.type,
-          hasText: !!(part as any).text,
-          textLength: (part as any).text?.length || 0,
-        })),
-      });
-
-      if (lastMessage?.role === "assistant" && lastMessage?.parts) {
-        const textParts = lastMessage.parts.filter(
-          (part) => part.type === "text"
-        );
-        console.log("[ChatInterface] Text parts found:", {
-          count: textParts.length,
-          parts: textParts.map((part) => ({
-            hasText: !!(part as any).text,
-            textLength: (part as any).text?.length || 0,
-            textPreview: (part as any).text?.substring(0, 100) || "No text",
-          })),
-        });
-
-        // Check if we have a substantial final answer
-        const hasSubstantialText = textParts.some(
-          (part) => (part as any).text && (part as any).text.length > 50
-        );
-
-        console.log("[ChatInterface] Final answer analysis:", {
-          hasTextParts: textParts.length > 0,
-          hasSubstantialText,
-          status,
-          isReady: status === "ready",
-        });
-
-        if (hasSubstantialText && status === "ready") {
-          console.log(
-            "[ChatInterface] ✅ FINAL ANSWER DETECTED - Status is ready with substantial text content"
-          );
-
-          // Force a re-render by updating a state that affects the key
-          console.log("[ChatInterface] 🔄 Forcing re-render for final answer");
-          setFinalAnswerProduced(true);
-
-          // Also manually trigger the onFinish logic since it's not being called
-          console.log("[ChatInterface] 🔧 Manually triggering onFinish logic");
-          if (user) {
-            console.log(
-              "[Chat Interface] Chat finished, syncing rate limit with server"
-            );
-            queryClient.invalidateQueries({ queryKey: ["rateLimit"] });
-          }
-        } else {
-          console.log(
-            "[ChatInterface] ❌ No final answer yet - Status:",
-            status,
-            "Substantial text:",
-            hasSubstantialText
-          );
-        }
-      }
-    }
-  }, [status, messages.length]);
-
-  // Timeout-based final answer detection as backup
-  useEffect(() => {
-    if (status === "ready" && messages.length > 0 && !finalAnswerProduced) {
-      console.log("[ChatInterface] Setting timeout for final answer detection");
-
-      // Clear any existing timeout
-      if (finalAnswerTimeoutRef.current) {
-        clearTimeout(finalAnswerTimeoutRef.current);
-      }
-
-      // Set a timeout to force final answer detection
-      finalAnswerTimeoutRef.current = setTimeout(() => {
-        console.log(
-          "[ChatInterface] ⏰ Timeout-based final answer detection triggered"
-        );
-
-        const lastMessage = messages[messages.length - 1];
-        if (lastMessage?.role === "assistant" && lastMessage?.parts) {
-          const textParts = lastMessage.parts.filter(
-            (part) => part.type === "text"
-          );
-          const hasSubstantialText = textParts.some(
-            (part) => (part as any).text && (part as any).text.length > 50
-          );
-
-          if (hasSubstantialText) {
-            console.log(
-              "[ChatInterface] ⏰ Timeout detected final answer - forcing render"
-            );
-            setFinalAnswerProduced(true);
-
-            // Manually trigger onFinish logic
-            if (user) {
-              console.log(
-                "[Chat Interface] Timeout-based chat finished, syncing rate limit"
-              );
-              queryClient.invalidateQueries({ queryKey: ["rateLimit"] });
-            }
-          }
-        }
-      }, 2000); // 2 second timeout
-    }
-
-    // Cleanup timeout on unmount or when status changes
-    return () => {
-      if (finalAnswerTimeoutRef.current) {
-        clearTimeout(finalAnswerTimeoutRef.current);
-        finalAnswerTimeoutRef.current = null;
-      }
-    };
-  }, [status, messages.length, finalAnswerProduced, user, queryClient]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -3761,7 +3228,7 @@ export function ChatInterface({
     const distanceFromBottom =
       container.scrollHeight - container.scrollTop - container.clientHeight;
     const atBottom = distanceFromBottom <= threshold;
-    console.log("[SCROLL DEBUG] isAtBottom (container):", {
+    scrollDebug("[SCROLL DEBUG] isAtBottom (container):", {
       scrollHeight: container.scrollHeight,
       scrollTop: container.scrollTop,
       clientHeight: container.clientHeight,
@@ -3777,7 +3244,7 @@ export function ChatInterface({
     const container = messagesContainerRef.current;
     if (!container) return;
 
-    console.log("[SCROLL DEBUG] Message update triggered:", {
+    scrollDebug("[SCROLL DEBUG] Message update triggered:", {
       userHasInteracted: userHasInteracted.current,
       messageCount: messages.length,
       status,
@@ -3797,26 +3264,26 @@ export function ChatInterface({
     // ONLY auto-scroll if sticky is enabled AND streaming/submitted
     const isLoading = status === "submitted" || status === "streaming";
     if (isLoading && shouldStickToBottomRef.current) {
-      console.log(
+      scrollDebug(
         "[SCROLL DEBUG] AUTO-SCROLLING because stick-to-bottom is enabled"
       );
       // Small delay to let content render
       requestAnimationFrame(() => {
         const c = messagesContainerRef.current;
         if (c && c.scrollHeight > c.clientHeight + 1) {
-          console.log("[SCROLL DEBUG] Scrolling container to bottom");
+          scrollDebug("[SCROLL DEBUG] Scrolling container to bottom");
           c.scrollTo({ top: c.scrollHeight, behavior: "smooth" });
         } else {
           const doc = document.scrollingElement || document.documentElement;
           const targetTop = doc.scrollHeight;
-          console.log("[SCROLL DEBUG] Scrolling window to bottom", {
+          scrollDebug("[SCROLL DEBUG] Scrolling window to bottom", {
             targetTop,
           });
           window.scrollTo({ top: targetTop, behavior: "smooth" });
         }
       });
     } else {
-      console.log(
+      scrollDebug(
         "[SCROLL DEBUG] NOT auto-scrolling - stick-to-bottom disabled"
       );
     }
@@ -3826,11 +3293,11 @@ export function ChatInterface({
   useEffect(() => {
     const container = messagesContainerRef.current;
     if (!container) {
-      console.log("[SCROLL DEBUG] Container not found in scroll handler!");
+      scrollDebug("[SCROLL DEBUG] Container not found in scroll handler!");
       return;
     }
 
-    console.log(
+    scrollDebug(
       "[SCROLL DEBUG] Setting up scroll handlers on container:",
       container
     );
@@ -3838,7 +3305,7 @@ export function ChatInterface({
     const handleScroll = () => {
       const atBottom = isAtBottom();
       setIsAtBottomState(atBottom);
-      console.log(
+      scrollDebug(
         "[SCROLL DEBUG] Scroll event fired (container), atBottom:",
         atBottom
       );
@@ -3852,11 +3319,11 @@ export function ChatInterface({
 
     // Handle wheel events to immediately detect scroll intent
     const handleWheel = (e: WheelEvent) => {
-      console.log("[SCROLL DEBUG] Wheel event detected, deltaY:", e.deltaY);
+      scrollDebug("[SCROLL DEBUG] Wheel event detected, deltaY:", e.deltaY);
 
       // If scrolling up, immediately disable auto-scroll
       if (e.deltaY < 0) {
-        console.log(
+        scrollDebug(
           "[SCROLL DEBUG] User scrolling UP via wheel - disabling auto-scroll"
         );
         userHasInteracted.current = true;
@@ -3868,7 +3335,7 @@ export function ChatInterface({
           if (atBottom) {
             userHasInteracted.current = false; // Reset if back at bottom
             shouldStickToBottomRef.current = true;
-            console.log(
+            scrollDebug(
               "[SCROLL DEBUG] User scrolled to bottom via wheel - enabling stick-to-bottom"
             );
           }
@@ -3888,7 +3355,7 @@ export function ChatInterface({
 
       if (deltaY > 10) {
         // Scrolling up
-        console.log(
+        scrollDebug(
           "[SCROLL DEBUG] Touch scroll UP detected - disabling auto-scroll"
         );
         userHasInteracted.current = true;
@@ -3909,12 +3376,12 @@ export function ChatInterface({
     const handleGlobalWheel = (e: WheelEvent) => {
       const inContainer = container.contains(e.target as Node);
       if (inContainer) {
-        console.log(
+        scrollDebug(
           "[SCROLL DEBUG] Global wheel event in container, deltaY:",
           e.deltaY
         );
         if (e.deltaY < 0) {
-          console.log(
+          scrollDebug(
             "[SCROLL DEBUG] Global scroll UP - disabling auto-scroll"
           );
           userHasInteracted.current = true;
@@ -3958,7 +3425,7 @@ export function ChatInterface({
   // Scroll to bottom when user submits a message
   useEffect(() => {
     if (status === "submitted") {
-      console.log("[SCROLL DEBUG] User submitted message, scrolling to bottom");
+      scrollDebug("[SCROLL DEBUG] User submitted message, scrolling to bottom");
       userHasInteracted.current = false; // Reset interaction flag for new message
       shouldStickToBottomRef.current = true; // Re-enable stickiness on new message
       // Always scroll to bottom when user sends a message
@@ -3975,13 +3442,13 @@ export function ChatInterface({
     e.preventDefault();
     if (input.trim() && status === "ready") {
       // Check current rate limit status immediately before sending
-      console.log("[Chat Interface] Rate limit check before submit:", {
+      chatDebug("[Chat Interface] Rate limit check before submit:", {
         canSendQuery,
       });
 
       if (!canSendQuery) {
         // Rate limit exceeded - show dialog and don't send message or update URL
-        console.log("[Chat Interface] Rate limit exceeded, showing dialog");
+        chatDebug("[Chat Interface] Rate limit exceeded, showing dialog");
         setIsRateLimited(true);
         onRateLimitError?.(
           resetTime?.toISOString() || new Date().toISOString()
@@ -3989,7 +3456,7 @@ export function ChatInterface({
         return;
       }
 
-      console.log("[Chat Interface] Rate limit OK, proceeding with message");
+      chatDebug("[Chat Interface] Rate limit OK, proceeding with message");
 
       // Store the input to send
       const queryText = input.trim();
@@ -4018,7 +3485,7 @@ export function ChatInterface({
 
       // Create session BEFORE sending message for proper usage tracking
       if (user && !currentSessionId && messages.length === 0) {
-        console.log(
+        chatDebug(
           "[Chat Interface] Creating session synchronously for first message"
         );
         try {
@@ -4027,27 +3494,28 @@ export function ChatInterface({
             sessionIdRef.current = newSessionId;
             setCurrentSessionId(newSessionId);
             onSessionCreated?.(newSessionId);
-            console.log(
+            chatDebug(
               "[Chat Interface] Session created before message:",
               newSessionId
             );
           }
         } catch (error) {
-          console.error("[Chat Interface] Failed to create session:", error);
+          chatDebug("error", "[Chat Interface] Failed to create session:", error);
           // Continue with message sending even if session creation fails
         }
       }
 
       // Increment rate limit for anonymous users (authenticated users handled server-side)
       if (!user && increment) {
-        console.log(
+        chatDebug(
           "[Chat Interface] Incrementing rate limit for anonymous user"
         );
         try {
           const result = await increment();
-          console.log("[Chat Interface] Anonymous increment result:", result);
+          chatDebug("[Chat Interface] Anonymous increment result:", result);
         } catch (error) {
-          console.error(
+          chatDebug(
+            "error",
             "[Chat Interface] Failed to increment anonymous rate limit:",
             error
           );
@@ -4065,7 +3533,7 @@ export function ChatInterface({
 
       // For authenticated users, trigger optimistic rate limit update
       if (user) {
-        console.log("[Chat Interface] Triggering optimistic rate limit update");
+        chatDebug("[Chat Interface] Triggering optimistic rate limit update");
         rateLimitMutation.mutate();
       }
     }
@@ -4127,18 +3595,6 @@ export function ChatInterface({
         newSet.delete(toolId);
       } else {
         newSet.add(toolId);
-      }
-      return newSet;
-    });
-  };
-
-  const toggleFredResultExpansion = (resultId: string) => {
-    setExpandedFredResults((prev) => {
-      const newSet = new Set(prev);
-      if (newSet.has(resultId)) {
-        newSet.delete(resultId);
-      } else {
-        newSet.add(resultId);
       }
       return newSet;
     });
@@ -4230,7 +3686,7 @@ export function ChatInterface({
             {/* Messages */}
             <div
               ref={messagesContainerRef}
-              className={`space-y-4 sm:space-y-8 overflow-y-auto overflow-x-hidden ${
+              className={`space-y-4 sm:space-y-8 min-h-[300px] overflow-y-auto overflow-x-hidden ${
                 messages.length > 0 ? "pt-20 sm:pt-24" : "pt-2 sm:pt-4"
               } ${isFormAtBottom ? "pb-32 sm:pb-36" : "pb-4 sm:pb-8"}`}
             >
@@ -4241,7 +3697,7 @@ export function ChatInterface({
                   animate={{ opacity: 1 }}
                   transition={{ duration: 0.5 }}
                 >
-                  <div className="text-center mb-4 sm:mb-6">
+                  <div className="text-center mb-6 sm:mb-8">
                     {/* Capabilities */}
                     <div className="max-w-4xl mx-auto">
                       {/* Fast Mode Toggle */}
@@ -4290,7 +3746,7 @@ export function ChatInterface({
                         <motion.button
                           onClick={() =>
                             handlePromptClick(
-                              "Assess whether increases in federal R&D and infrastructure spending (USAspending categories) correlate with private investment (FRED) over medium horizons. Estimate sign and magnitude of crowding effects."
+                              "Find all active Phase 3 clinical trials for metastatic melanoma. Focus on immunotherapy trials, show enrollment numbers, primary endpoints, and compare efficacy data. Create a visualization comparing response rates across different checkpoint inhibitors."
                             )
                           }
                           className="bg-gray-50 dark:bg-gray-800/50 p-2.5 sm:p-4 rounded-xl border border-gray-100 dark:border-gray-700 hover:border-gray-200 dark:hover:border-gray-600 transition-colors hover:bg-gray-100 dark:hover:bg-gray-800 text-left group"
@@ -4300,11 +3756,11 @@ export function ChatInterface({
                           whileTap={{ scale: 0.98 }}
                         >
                           <div className="text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2 text-xs sm:text-sm font-medium group-hover:text-gray-900 dark:group-hover:text-gray-100">
-                            💸 Fiscal crowding-in vs crowding-out
+                            🧬 Clinical Trials
                           </div>
                           <div className="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400">
-                            Uses official US data for reliable, reproducible
-                            analysis.
+                            Uses official US data for reliable, productive
+                            analysis
                           </div>
                         </motion.button>
 
@@ -4321,11 +3777,11 @@ export function ChatInterface({
                           whileTap={{ scale: 0.98 }}
                         >
                           <div className="text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2 text-xs sm:text-sm font-medium group-hover:text-gray-900 dark:group-hover:text-gray-100">
-                            🌎 Cross-country comparability
+                            🌍 Cross-country comparability
                           </div>
                           <div className="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400">
-                            Analyze official press releases for robust
-                            international benchmarking.
+                            Analyse official press releases for robust
+                            international benchmarking
                           </div>
                         </motion.button>
 
@@ -4345,8 +3801,8 @@ export function ChatInterface({
                             🔍 Output gap and cyclical risk
                           </div>
                           <div className="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400">
-                            Assess output gap and cyclical risk using official
-                            FRED and BLS data.
+                            Access output gap and cyclical risk using official
+                            FRED and BLS data
                           </div>
                         </motion.button>
 
@@ -4363,7 +3819,7 @@ export function ChatInterface({
                           whileTap={{ scale: 0.98 }}
                         >
                           <div className="text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2 text-xs sm:text-sm font-medium group-hover:text-gray-900 dark:group-hover:text-gray-100">
-                            🧮 CPI Headline vs. Core
+                            💼 CPI headline vs Core
                           </div>
                           <div className="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400">
                             Compare headline and core inflation, and clarify
@@ -4384,11 +3840,10 @@ export function ChatInterface({
                           whileTap={{ scale: 0.98 }}
                         >
                           <div className="text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2 text-xs sm:text-sm font-medium group-hover:text-gray-900 dark:group-hover:text-gray-100">
-                            📦 Trade and exposure
+                            🗃️ Trade and exposure
                           </div>
                           <div className="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400">
-                            Compare trade and exposure indicators across
-                            countries.
+                            Compare trade and exposure between Vietnam and USA.
                           </div>
                         </motion.button>
 
@@ -4405,7 +3860,7 @@ export function ChatInterface({
                           whileTap={{ scale: 0.98 }}
                         >
                           <div className="text-blue-700 dark:text-blue-300 mb-1.5 sm:mb-2 text-xs sm:text-sm font-medium group-hover:text-blue-900 dark:group-hover:text-blue-100">
-                            🔄 Economic performance
+                            📈 Economic performance
                           </div>
                           <div className="text-[10px] sm:text-xs text-blue-600 dark:text-blue-400">
                             Get latest economic performance indicators.
@@ -4418,40 +3873,16 @@ export function ChatInterface({
                           <div className="flex items-center gap-2">
                             <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
                             <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
-                              Live Economic News
+                              Live News
                             </h3>
                             <span className="text-xs text-gray-500 dark:text-gray-400">
-                              from
+                              Powered by Valyu
                             </span>
-                            <div className="ml-0">
-                              <Select
-                                value={selectedCountry}
-                                onValueChange={setSelectedCountry}
-                              >
-                                <SelectTrigger className="w-30 h-6 text-xs border-transparent shadow-none focus:ring-0 focus:border-transparent bg-transparent transition-shadow hover:shadow-[0_0_0_2px_rgba(168,85,247,0.5)] dark:hover:shadow-[0_0_0_2px_rgba(192,132,252,0.5)]">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {countries.map((country) => (
-                                    <SelectItem
-                                      key={country.value}
-                                      value={country.value}
-                                    >
-                                      {country.label}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </div>
                           </div>
                           <button
                             onClick={() => {
                               handlePromptClick(
-                                `Search for the latest economic news in ${
-                                  countries.find(
-                                    (c) => c.value === selectedCountry
-                                  )?.label || selectedCountry
-                                }`
+                                "Search for the latest trending news"
                               );
                             }}
                             className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 hover:underline dark:hover:text-blue-300 transition-colors cursor-pointer"
@@ -4459,7 +3890,7 @@ export function ChatInterface({
                             more
                           </button>
                         </div>
-                        <NewsCarousel country={selectedCountry} />
+                        <NewsCarousel />
                       </div>
                     </div>
                   </div>
@@ -4659,7 +4090,7 @@ export function ChatInterface({
 
                     {/* Powered by Valyu */}
                     <motion.div
-                      className="flex items-center justify-center mt-4"
+                      className="flex items-center justify-center mt-2"
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       transition={{ delay: 1.1, duration: 0.5 }}
@@ -4700,7 +4131,7 @@ export function ChatInterface({
 
                   return (
                     <motion.div
-                      key={`${message.id}-${finalAnswerProduced}`}
+                      key={message.id}
                       data-message-id={message.id}
                       className="group"
                       initial={
@@ -4954,45 +4385,11 @@ export function ChatInterface({
                                 const groupedParts: any[] = [];
                                 let currentReasoningGroup: any[] = [];
 
-                                console.log(
-                                  "[Part Rendering] Processing message parts:",
-                                  {
-                                    messageId: message.id,
-                                    partCount: message.parts.length,
-                                    parts: message.parts.map((p, i) => ({
-                                      index: i,
-                                      type: p.type,
-                                      hasText: !!(p as any).text,
-                                      hasToolCallId: !!(p as any).toolCallId,
-                                      state: (p as any).state,
-                                      hasInput: !!(p as any).input,
-                                      hasOutput: !!(p as any).output,
-                                    })),
-                                  }
-                                );
-
                                 message.parts.forEach((part, index) => {
-                                  console.log(
-                                    "[Part Rendering] Processing part:",
-                                    {
-                                      messageId: message.id,
-                                      partIndex: index,
-                                      partType: part.type,
-                                      partState: (part as any).state,
-                                      hasToolCallId: !!(part as any).toolCallId,
-                                      toolCallId: (part as any).toolCallId,
-                                      hasInput: !!(part as any).input,
-                                      hasOutput: !!(part as any).output,
-                                      outputType: typeof (part as any).output,
-                                      outputLength:
-                                        (part as any).output?.length || 0,
-                                    }
-                                  );
-
                                   if (
                                     part.type === "reasoning" &&
-                                    (part as any).text &&
-                                    (part as any).text.trim() !== ""
+                                    part.text &&
+                                    part.text.trim() !== ""
                                   ) {
                                     currentReasoningGroup.push({ part, index });
                                   } else {
@@ -5019,36 +4416,7 @@ export function ChatInterface({
                                   });
                                 }
 
-                                console.log(
-                                  "[Part Rendering] Rendering grouped parts:",
-                                  {
-                                    messageId: message.id,
-                                    groupCount: groupedParts.length,
-                                    groups: groupedParts.map((g, i) => ({
-                                      index: i,
-                                      type: g.type,
-                                      partType: g.part?.type,
-                                      partState: g.part?.state,
-                                      hasToolCallId: !!g.part?.toolCallId,
-                                      toolCallId: g.part?.toolCallId,
-                                    })),
-                                  }
-                                );
-
                                 return groupedParts.map((group, groupIndex) => {
-                                  console.log(
-                                    "[Part Rendering] Rendering group:",
-                                    {
-                                      messageId: message.id,
-                                      groupIndex,
-                                      groupType: group.type,
-                                      partType: group.part?.type,
-                                      partState: group.part?.state,
-                                      hasToolCallId: !!group.part?.toolCallId,
-                                      toolCallId: group.part?.toolCallId,
-                                    }
-                                  );
-
                                   if (group.type === "reasoning-group") {
                                     // Render combined reasoning component
                                     const combinedText = group.parts
@@ -5083,24 +4451,6 @@ export function ChatInterface({
                                     // Render single part normally
                                     const { part, index } = group;
 
-                                    console.log(
-                                      "[Part Rendering] Processing part in switch:",
-                                      {
-                                        messageId: message.id,
-                                        partIndex: index,
-                                        partType: part.type,
-                                        partState: (part as any).state,
-                                        hasToolCallId: !!(part as any)
-                                          .toolCallId,
-                                        toolCallId: (part as any).toolCallId,
-                                        hasInput: !!(part as any).input,
-                                        hasOutput: !!(part as any).output,
-                                        outputType: typeof (part as any).output,
-                                        outputLength:
-                                          (part as any).output?.length || 0,
-                                      }
-                                    );
-
                                     switch (part.type) {
                                       // Text parts
                                       case "text":
@@ -5129,27 +4479,25 @@ export function ChatInterface({
                                               ) {
                                                 const p = message.parts[i];
 
-                                                // Check for search tool results (web search and other tools)
+                                                // Check for search tool results (economics, web, and data tools)
                                                 if (
                                                   (p.type ===
-                                                    "tool-webSearch" ||
+                                                    "tool-economicsSearch" ||
                                                     p.type ===
-                                                      "tool-createChart" ||
+                                                      "tool-webSearch" ||
                                                     p.type ===
-                                                      "tool-codeExecution") &&
+                                                      "tool-getFREDSeriesData" ||
+                                                    p.type ===
+                                                      "tool-getBLSSeriesData" ||
+                                                    p.type ===
+                                                      "tool-getWBDetails" ||
+                                                    p.type ===
+                                                      "tool-getUSASpendingDetails") &&
                                                   p.state ===
                                                     "output-available" &&
                                                   p.output
                                                 ) {
                                                   try {
-                                                    // Skip JSON parsing for codeExecution tool as it returns formatted text
-                                                    if (
-                                                      p.type ===
-                                                      "tool-codeExecution"
-                                                    ) {
-                                                      return; // Skip citation extraction for code execution
-                                                    }
-
                                                     const output =
                                                       typeof p.output ===
                                                       "string"
@@ -5206,17 +4554,9 @@ export function ChatInterface({
                                                                 item.relevanceScore ||
                                                                 item.relevance_score,
                                                               toolType:
-                                                                p.type ===
-                                                                "tool-webSearch"
-                                                                  ? "web"
-                                                                  : p.type ===
-                                                                    "tool-createChart"
-                                                                  ? "web"
-                                                                  : (p as any)
-                                                                      .type ===
-                                                                    "tool-codeExecution"
-                                                                  ? "web"
-                                                                  : "web",
+                                                                mapToolTypeToCitationCategory(
+                                                                  p.type
+                                                                ),
                                                             },
                                                           ];
                                                           citationNumber++;
@@ -5266,20 +4606,6 @@ export function ChatInterface({
                                                   />
                                                 );
                                               } else {
-                                                console.log(
-                                                  "[ChatInterface] Rendering text part:",
-                                                  {
-                                                    textLength:
-                                                      part.text?.length,
-                                                    textPreview:
-                                                      part.text?.substring(
-                                                        0,
-                                                        100
-                                                      ),
-                                                    partType: part.type,
-                                                    messageId: message.id,
-                                                  }
-                                                );
                                                 return (
                                                   <MemoizedMarkdown
                                                     text={part.text}
@@ -5421,7 +4747,136 @@ export function ChatInterface({
                                         break;
                                       }
 
-                                      // Web Search Tool
+                                      case "tool-economicsSearch": {
+                                        const callId = part.toolCallId;
+                                        switch (part.state) {
+                                          case "input-streaming":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-purple-700 dark:text-purple-400 mb-2">
+                                                  <span className="text-lg">
+                                                    🔍
+                                                  </span>
+                                                  <span className="font-medium">
+                                                    Economics Search
+                                                  </span>
+                                                  <Clock className="h-3 w-3 animate-spin" />
+                                                </div>
+                                                <div className="text-xs text-purple-600 dark:text-purple-300">
+                                                  Gathering macro research and
+                                                  news...
+                                                </div>
+                                              </div>
+                                            );
+                                          case "input-available":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-purple-700 dark:text-purple-400 mb-2">
+                                                  <span className="text-lg">
+                                                    🔍
+                                                  </span>
+                                                  <span className="font-medium">
+                                                    Economics Search
+                                                  </span>
+                                                  <Clock className="h-3 w-3 animate-spin" />
+                                                </div>
+                                                <div className="text-xs text-purple-600 dark:text-purple-300">
+                                                  <div className="bg-purple-100 dark:bg-purple-800/30 p-2 rounded">
+                                                    <div className="font-mono text-xs">
+                                                      Query: &quot;
+                                                      {part.input.query}&quot;
+                                                      {part.input.dataType &&
+                                                        part.input.dataType !==
+                                                          "auto" && (
+                                                          <>
+                                                            <br />
+                                                            Data type:{" "}
+                                                            {
+                                                              part.input
+                                                                .dataType
+                                                            }
+                                                          </>
+                                                        )}
+                                                      {part.input
+                                                        .maxResults && (
+                                                        <>
+                                                          <br />
+                                                          Max results:{" "}
+                                                          {
+                                                            part.input
+                                                              .maxResults
+                                                          }
+                                                        </>
+                                                      )}
+                                                    </div>
+                                                  </div>
+                                                  <div className="mt-2 text-xs">
+                                                    Searching Valyu
+                                                    DeepSearch...
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            );
+                                          case "output-available": {
+                                            const results =
+                                              extractSearchResults(part.output);
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-3 sm:p-4"
+                                              >
+                                                <div className="flex items-center justify-between gap-3 mb-4">
+                                                  <div className="flex items-center gap-2 text-green-700 dark:text-green-400">
+                                                    <CheckCircle className="h-4 w-4" />
+                                                    <span className="font-medium">
+                                                      Economics Search Results
+                                                    </span>
+                                                    <span className="text-xs text-green-600 dark:text-green-300">
+                                                      ({results.length} results)
+                                                    </span>
+                                                  </div>
+                                                  {part.input?.query && (
+                                                    <div className="text-xs font-mono text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/20 px-3 py-1 rounded border border-green-200 dark:border-green-700 max-w-[60%] truncate">
+                                                      {part.input.query}
+                                                    </div>
+                                                  )}
+                                                </div>
+                                                <SearchResultsCarousel
+                                                  results={results}
+                                                  type="economics"
+                                                  messageId={message.id}
+                                                  toolName="economicsSearch"
+                                                />
+                                              </div>
+                                            );
+                                          }
+                                          case "output-error":
+                                            return (
+                                              <div
+                                                key={callId}
+                                                className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 sm:p-3"
+                                              >
+                                                <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
+                                                  <AlertCircle className="h-4 w-4" />
+                                                  <span className="font-medium">
+                                                    Economics Search Error
+                                                  </span>
+                                                </div>
+                                                <div className="text-sm text-red-600 dark:text-red-300">
+                                                  {part.errorText}
+                                                </div>
+                                              </div>
+                                            );
+                                        }
+                                        break;
+                                      }
+
                                       case "tool-webSearch": {
                                         const callId = part.toolCallId;
                                         switch (part.state) {
@@ -5440,8 +4895,9 @@ export function ChatInterface({
                                                   </span>
                                                   <Clock className="h-3 w-3 animate-spin" />
                                                 </div>
-                                                <div className="text-sm text-cyan-600 dark:text-cyan-300">
-                                                  Preparing web search...
+                                                <div className="text-xs text-cyan-600 dark:text-cyan-300">
+                                                  Gathering relevant web
+                                                  content...
                                                 </div>
                                               </div>
                                             );
@@ -5460,31 +4916,23 @@ export function ChatInterface({
                                                   </span>
                                                   <Clock className="h-3 w-3 animate-spin" />
                                                 </div>
-                                                <div className="text-sm text-cyan-600 dark:text-cyan-300">
+                                                <div className="text-xs text-cyan-600 dark:text-cyan-300">
                                                   <div className="bg-cyan-100 dark:bg-cyan-800/30 p-2 rounded">
                                                     <div className="text-xs">
-                                                      Searching for: &quot;
+                                                      Query: &quot;
                                                       {part.input.query}&quot;
                                                     </div>
                                                   </div>
                                                   <div className="mt-2 text-xs">
-                                                    Searching the world wide
-                                                    web...
+                                                    Crawling latest public
+                                                    sources...
                                                   </div>
                                                 </div>
                                               </div>
                                             );
-                                          case "output-available":
-                                            console.log(
-                                              "[Tool Output] Web search output:",
-                                              part.output
-                                            );
-                                            const webResults =
+                                          case "output-available": {
+                                            const results =
                                               extractSearchResults(part.output);
-                                            console.log(
-                                              "[Tool Output] Extracted web results:",
-                                              webResults
-                                            );
                                             return (
                                               <div
                                                 key={callId}
@@ -5497,27 +4945,24 @@ export function ChatInterface({
                                                       Web Search Results
                                                     </span>
                                                     <span className="text-xs text-blue-600 dark:text-blue-300">
-                                                      ({webResults.length}{" "}
-                                                      results)
+                                                      ({results.length} results)
                                                     </span>
                                                   </div>
                                                   {part.input?.query && (
-                                                    <div
-                                                      className="text-xs font-mono text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/20 px-3 py-1 rounded border border-blue-200 dark:border-blue-700 max-w-[60%] truncate"
-                                                      title={part.input.query}
-                                                    >
+                                                    <div className="text-xs font-mono text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/20 px-3 py-1 rounded border border-blue-200 dark:border-blue-700 max-w-[60%] truncate">
                                                       {part.input.query}
                                                     </div>
                                                   )}
                                                 </div>
                                                 <SearchResultsCarousel
-                                                  results={webResults}
+                                                  results={results}
                                                   type="web"
-                                                  toolName="webSearch"
                                                   messageId={message.id}
+                                                  toolName="webSearch"
                                                 />
                                               </div>
                                             );
+                                          }
                                           case "output-error":
                                             return (
                                               <div
@@ -5538,7 +4983,6 @@ export function ChatInterface({
                                         }
                                         break;
                                       }
-
                                       // Chart Creation Tool
                                       case "tool-createChart": {
                                         const callId = part.toolCallId;
@@ -5605,106 +5049,11 @@ export function ChatInterface({
                                               !expandedTools.has(
                                                 `collapsed-${callId}`
                                               );
-
-                                            // Add comprehensive logging for chart rendering
-                                            console.log(
-                                              `[Chart Rendering] Tool call ID: ${callId}`
-                                            );
-                                            console.log(
-                                              `[Chart Rendering] Chart expanded: ${isChartExpanded}`
-                                            );
-                                            console.log(
-                                              `[Chart Rendering] Chart output:`,
-                                              part.output
-                                            );
-                                            console.log(
-                                              `[Chart Rendering] Chart data series count:`,
-                                              part.output?.dataSeries?.length
-                                            );
-
-                                            // Force chart to be expanded by default
-                                            if (!isChartExpanded) {
-                                              console.log(
-                                                `[Chart Rendering] Forcing chart expansion for ${callId}`
-                                              );
-                                              toggleChartExpansion(callId);
-                                            }
-
-                                            // Validate chart data before rendering
-                                            if (!part.output) {
-                                              console.error(
-                                                `[Chart Rendering] No output data for chart ${callId}`
-                                              );
-                                              return (
-                                                <div
-                                                  key={callId}
-                                                  className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 sm:p-3"
-                                                >
-                                                  <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
-                                                    <AlertCircle className="h-4 w-4" />
-                                                    <span className="font-medium">
-                                                      Chart Rendering Error
-                                                    </span>
-                                                  </div>
-                                                  <div className="text-sm text-red-600 dark:text-red-300">
-                                                    No chart data available
-                                                  </div>
-                                                </div>
-                                              );
-                                            }
-
-                                            if (
-                                              !part.output.dataSeries ||
-                                              part.output.dataSeries.length ===
-                                                0
-                                            ) {
-                                              console.error(
-                                                `[Chart Rendering] No data series for chart ${callId}`
-                                              );
-                                              return (
-                                                <div
-                                                  key={callId}
-                                                  className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 sm:p-3"
-                                                >
-                                                  <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
-                                                    <AlertCircle className="h-4 w-4" />
-                                                    <span className="font-medium">
-                                                      Chart Data Error
-                                                    </span>
-                                                  </div>
-                                                  <div className="text-sm text-red-600 dark:text-red-300">
-                                                    No data series available for
-                                                    chart
-                                                  </div>
-                                                </div>
-                                              );
-                                            }
-
                                             return (
                                               <div
                                                 key={callId}
                                                 className="mt-2"
                                               >
-                                                {/* Show data processing indicator */}
-                                                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-2 mb-2">
-                                                  <div className="flex items-center gap-2 text-blue-700 dark:text-blue-400 text-sm">
-                                                    <div className="animate-spin h-4 w-4 border-2 border-blue-600 border-t-transparent rounded-full"></div>
-                                                    <span className="font-medium">
-                                                      Processing Chart Data
-                                                    </span>
-                                                  </div>
-                                                  <div className="text-xs text-blue-600 dark:text-blue-300 mt-1">
-                                                    Data series:{" "}
-                                                    {part.output?.dataSeries
-                                                      ?.length || 0}{" "}
-                                                    • Chart type:{" "}
-                                                    {part.output?.chartType ||
-                                                      "Unknown"}{" "}
-                                                    • Title:{" "}
-                                                    {part.output?.title ||
-                                                      "No title"}
-                                                  </div>
-                                                </div>
                                                 {isChartExpanded ? (
                                                   <div className="relative">
                                                     <Button
@@ -5719,27 +5068,9 @@ export function ChatInterface({
                                                     >
                                                       <ChevronUp className="h-4 w-4" />
                                                     </Button>
-                                                    <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded p-2 mb-2">
-                                                      <div className="flex items-center gap-2 text-green-700 dark:text-green-400 text-sm">
-                                                        <CheckCircle className="h-4 w-4" />
-                                                        <span className="font-medium">
-                                                          Chart Rendered
-                                                          Successfully
-                                                        </span>
-                                                      </div>
-                                                    </div>
-                                                    <div
-                                                      className="chart-container"
-                                                      key={`chart-${callId}-${chartRenderKey}`}
-                                                    >
-                                                      <ChartErrorBoundary
-                                                        callId={callId}
-                                                      >
-                                                        <FinancialChart
-                                                          {...part.output}
-                                                        />
-                                                      </ChartErrorBoundary>
-                                                    </div>
+                                                    <FinancialChart
+                                                      {...part.output}
+                                                    />
                                                   </div>
                                                 ) : (
                                                   <div className="bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 rounded-xl p-4">
@@ -5821,27 +5152,42 @@ export function ChatInterface({
                                         }
                                         break;
                                       }
-                                      // Economics Search Tool
-                                      case "tool-economicsSearch": {
+
+                                      // Economic data detail tools
+                                      case "tool-getFREDSeriesData":
+                                      case "tool-getBLSSeriesData":
+                                      case "tool-getWBDetails":
+                                      case "tool-getUSASpendingDetails": {
                                         const callId = part.toolCallId;
                                         switch (part.state) {
                                           case "input-streaming":
                                             return (
                                               <div
                                                 key={callId}
-                                                className="mt-2 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded p-2 sm:p-3"
+                                                className="mt-2 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded p-2 sm:p-3"
                                               >
-                                                <div className="flex items-center gap-2 text-purple-700 dark:text-purple-400 mb-2">
+                                                <div className="flex items-center gap-2 text-yellow-700 dark:text-yellow-400 mb-2">
                                                   <span className="text-lg">
-                                                    📊
+                                                    💹
                                                   </span>
                                                   <span className="font-medium">
-                                                    Searching Economics Data
+                                                    {part.type ===
+                                                      "tool-getFREDSeriesData" &&
+                                                      "Searching FRED Series"}
+                                                    {part.type ===
+                                                      "tool-getBLSSeriesData" &&
+                                                      "Searching BLS Series"}
+                                                    {part.type ===
+                                                      "tool-getWBDetails" &&
+                                                      "Searching World Bank Data"}
+                                                    {part.type ===
+                                                      "tool-getUSASpendingDetails" &&
+                                                      "Fetching USAspending Data"}
                                                   </span>
                                                   <Clock className="h-3 w-3 animate-spin" />
                                                 </div>
-                                                <div className="text-sm text-purple-600 dark:text-purple-300">
-                                                  Searching economics
+                                                <div className="text-sm text-yellow-600 dark:text-yellow-300">
+                                                  Searching economic
                                                   databases...
                                                 </div>
                                               </div>
@@ -5850,1615 +5196,735 @@ export function ChatInterface({
                                             return (
                                               <div
                                                 key={callId}
-                                                className="mt-2 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded p-2 sm:p-3"
+                                                className="mt-2 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded p-2 sm:p-3"
                                               >
-                                                <div className="flex items-center gap-2 text-purple-700 dark:text-purple-400 mb-2">
+                                                <div className="flex items-center gap-2 text-yellow-700 dark:text-yellow-400 mb-2">
                                                   <span className="text-lg">
-                                                    📊
+                                                    💹
                                                   </span>
                                                   <span className="font-medium">
-                                                    Searching Economics Data
-                                                  </span>
-                                                  <Clock className="h-3 w-3 animate-spin" />
-                                                </div>
-                                                <div className="text-sm text-purple-600 dark:text-purple-300">
-                                                  <div className="bg-purple-100 dark:bg-purple-800/30 p-2 rounded">
-                                                    <div className="text-xs">
-                                                      Query: &quot;
-                                                      {part.input.query}&quot;
-                                                    </div>
-                                                  </div>
-                                                  <div className="mt-2 text-xs">
-                                                    Searching economics
-                                                    databases...
-                                                  </div>
-                                                </div>
-                                              </div>
-                                            );
-                                          case "output-available":
-                                            console.log(
-                                              "[Tool Output] Economics search output:",
-                                              part.output
-                                            );
-                                            const economicsResults =
-                                              extractSearchResults(part.output);
-                                            console.log(
-                                              "[Tool Output] Extracted economics results:",
-                                              economicsResults
-                                            );
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg p-3 sm:p-4"
-                                              >
-                                                <div className="flex items-center justify-between gap-3 mb-4">
-                                                  <div className="flex items-center gap-2 text-purple-700 dark:text-purple-400">
-                                                    <CheckCircle className="h-4 w-4" />
-                                                    <span className="font-medium">
-                                                      Economics Search Results
-                                                    </span>
-                                                    <span className="text-xs text-purple-600 dark:text-purple-300">
-                                                      ({economicsResults.length}{" "}
-                                                      results)
-                                                    </span>
-                                                  </div>
-                                                </div>
-                                                {economicsResults.length > 0 ? (
-                                                  <SearchResultsCarousel
-                                                    results={economicsResults}
-                                                    type="web"
-                                                    messageId={message.id}
-                                                    toolName="economicsSearch"
-                                                  />
-                                                ) : (
-                                                  <div className="text-sm text-purple-600 dark:text-purple-300">
-                                                    No economics data found for
-                                                    this query.
-                                                  </div>
-                                                )}
-                                              </div>
-                                            );
-                                          case "error":
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 sm:p-3"
-                                              >
-                                                <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
-                                                  <XCircle className="h-4 w-4" />
-                                                  <span className="font-medium">
-                                                    Economics Search Failed
-                                                  </span>
-                                                </div>
-                                                <div className="text-sm text-red-600 dark:text-red-300">
-                                                  {part.errorText}
-                                                </div>
-                                              </div>
-                                            );
-                                        }
-                                        break;
-                                      }
-                                      // FRED Search Tool
-                                      case "tool-FREDSearch": {
-                                        const callId = part.toolCallId;
-                                        switch (part.state) {
-                                          case "input-streaming":
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 sm:p-3"
-                                              >
-                                                <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
-                                                  <span className="text-lg">
-                                                    📈
-                                                  </span>
-                                                  <span className="font-medium">
-                                                    Searching FRED Database
-                                                  </span>
-                                                  <Clock className="h-3 w-3 animate-spin" />
-                                                </div>
-                                                <div className="text-sm text-red-600 dark:text-red-300">
-                                                  Searching FRED database...
-                                                </div>
-                                              </div>
-                                            );
-                                          case "input-available":
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 sm:p-3"
-                                              >
-                                                <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
-                                                  <span className="text-lg">
-                                                    📈
-                                                  </span>
-                                                  <span className="font-medium">
-                                                    Searching FRED Database
-                                                  </span>
-                                                  <Clock className="h-3 w-3 animate-spin" />
-                                                </div>
-                                                <div className="text-sm text-red-600 dark:text-red-300">
-                                                  <div className="bg-red-100 dark:bg-red-800/30 p-2 rounded">
-                                                    <div className="text-xs">
-                                                      Query: &quot;
-                                                      {part.input.query}&quot;
-                                                    </div>
-                                                  </div>
-                                                  <div className="mt-2 text-xs">
-                                                    Searching FRED database...
-                                                  </div>
-                                                </div>
-                                              </div>
-                                            );
-                                          case "output-available":
-                                            const fredResults =
-                                              extractSearchResults(part.output);
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 sm:p-4"
-                                              >
-                                                <div className="flex items-center justify-between gap-3 mb-4">
-                                                  <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
-                                                    <CheckCircle className="h-4 w-4" />
-                                                    <span className="font-medium">
-                                                      FRED Search Results
-                                                    </span>
-                                                    <span className="text-xs text-red-600 dark:text-red-300">
-                                                      ({fredResults.length}{" "}
-                                                      results)
-                                                    </span>
-                                                  </div>
-                                                </div>
-                                                {fredResults.length > 0 ? (
-                                                  <SearchResultsCarousel
-                                                    results={fredResults}
-                                                    type="web"
-                                                    messageId={message.id}
-                                                    toolName="FREDSearch"
-                                                  />
-                                                ) : (
-                                                  <div className="text-sm text-red-600 dark:text-red-300">
-                                                    No FRED data found for this
-                                                    query.
-                                                  </div>
-                                                )}
-                                              </div>
-                                            );
-                                          case "error":
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 sm:p-3"
-                                              >
-                                                <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
-                                                  <XCircle className="h-4 w-4" />
-                                                  <span className="font-medium">
-                                                    FRED Search Failed
-                                                  </span>
-                                                </div>
-                                                <div className="text-sm text-red-600 dark:text-red-300">
-                                                  {part.errorText}
-                                                </div>
-                                              </div>
-                                            );
-                                        }
-                                        break;
-                                      }
-                                      // Get FRED Series Data Tool
-                                      case "tool-getFREDSeriesData": {
-                                        const callId = part.toolCallId;
-                                        switch (part.state) {
-                                          case "input-streaming":
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-2 sm:p-3"
-                                              >
-                                                <div className="flex items-center gap-2 text-blue-700 dark:text-blue-400 mb-2">
-                                                  <span className="text-lg">
-                                                    📊
-                                                  </span>
-                                                  <span className="font-medium">
-                                                    Fetching FRED Series Data
-                                                  </span>
-                                                  <Clock className="h-3 w-3 animate-spin" />
-                                                </div>
-                                                <div className="text-sm text-blue-600 dark:text-blue-300">
-                                                  Fetching time series data...
-                                                </div>
-                                              </div>
-                                            );
-                                          case "input-available":
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-2 sm:p-3"
-                                              >
-                                                <div className="flex items-center gap-2 text-blue-700 dark:text-blue-400 mb-2">
-                                                  <span className="text-lg">
-                                                    📊
-                                                  </span>
-                                                  <span className="font-medium">
-                                                    Fetching FRED Series Data
-                                                  </span>
-                                                  <Clock className="h-3 w-3 animate-spin" />
-                                                </div>
-                                                <div className="text-sm text-blue-600 dark:text-blue-300">
-                                                  <div className="bg-blue-100 dark:bg-blue-800/30 p-2 rounded">
-                                                    <div className="text-xs">
-                                                      Query: &quot;
-                                                      {part.input.query}&quot;
-                                                    </div>
-                                                  </div>
-                                                  <div className="mt-2 text-xs">
-                                                    Fetching FRED time series
-                                                    data...
-                                                  </div>
-                                                </div>
-                                              </div>
-                                            );
-                                          case "output-available":
-                                            const fredData = part.output;
-
-                                            // Parse the FRED data to handle multiple results
-                                            let parsedResults = [];
-                                            let hasResults = true;
-
-                                            try {
-                                              if (
-                                                typeof fredData === "string"
-                                              ) {
-                                                // Check if it's an error message (starts with emoji or error text)
-                                                if (
-                                                  fredData.startsWith("❌") ||
-                                                  fredData.startsWith(
-                                                    "Error"
-                                                  ) ||
-                                                  fredData.startsWith("🔐")
-                                                ) {
-                                                  hasResults = false;
-                                                  parsedResults = [];
-                                                } else {
-                                                  const parsed =
-                                                    JSON.parse(fredData);
-
-                                                  // Check if it's a "no results" response
-                                                  if (parsed.found === false) {
-                                                    hasResults = false;
-                                                    parsedResults = [];
-                                                  } else {
-                                                    // FRED tool returns a single object, not an array
-                                                    parsedResults = [parsed];
-                                                  }
-                                                }
-                                              } else if (
-                                                Array.isArray(fredData)
-                                              ) {
-                                                parsedResults = fredData;
-                                              } else {
-                                                parsedResults = [fredData];
-                                              }
-                                            } catch (error) {
-                                              // If JSON parsing fails, treat as error
-                                              hasResults = false;
-                                              parsedResults = [];
-                                            }
-
-                                            // Format results for SearchResultsCarousel
-                                            const fredResults =
-                                              parsedResults.map(
-                                                (result, index) => {
-                                                  const parsedResult =
-                                                    typeof result === "string"
-                                                      ? JSON.parse(result)
-                                                      : result;
-                                                  return {
-                                                    id: `${callId}-${index}`,
-                                                    title:
-                                                      parsedResult.title ||
-                                                      `FRED Series Data ${
-                                                        index + 1
-                                                      }`,
-                                                    content:
-                                                      parsedResult.content ||
-                                                      (typeof result ===
-                                                      "string"
-                                                        ? result
-                                                        : JSON.stringify(
-                                                            result,
-                                                            null,
-                                                            2
-                                                          )),
-                                                    fullContent:
-                                                      parsedResult.content ||
-                                                      (typeof result ===
-                                                      "string"
-                                                        ? result
-                                                        : JSON.stringify(
-                                                            result,
-                                                            null,
-                                                            2
-                                                          )),
-                                                    summary:
-                                                      parsedResult.content &&
-                                                      typeof parsedResult.content ===
-                                                        "string"
-                                                        ? parsedResult.content.substring(
-                                                            0,
-                                                            200
-                                                          ) + "..."
-                                                        : typeof result ===
-                                                          "string"
-                                                        ? result.substring(
-                                                            0,
-                                                            200
-                                                          ) + "..."
-                                                        : JSON.stringify(
-                                                            result,
-                                                            null,
-                                                            2
-                                                          ).substring(0, 200) +
-                                                          "...",
-                                                    url:
-                                                      parsedResult.url || "#",
-                                                    dataType: "fred_data",
-                                                    source:
-                                                      parsedResult.source ||
-                                                      "FRED",
-                                                    date:
-                                                      parsedResult.date ||
-                                                      new Date().toISOString(),
-                                                    isStructured: true,
-                                                    metadata: {
-                                                      seriesId:
-                                                        part.input?.seriesId ||
-                                                        "Unknown",
-                                                      toolType:
-                                                        "getFREDSeriesData",
-                                                    },
-                                                  };
-                                                }
-                                              );
-
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg p-3 sm:p-4"
-                                              >
-                                                <div className="flex items-center justify-between gap-3 mb-4">
-                                                  <div className="flex items-center gap-2 text-orange-700 dark:text-orange-400">
-                                                    <CheckCircle className="h-4 w-4" />
-                                                    <span className="font-medium">
-                                                      FRED Series Data Retrieved
-                                                    </span>
-                                                    <span className="text-xs text-orange-600 dark:text-orange-300">
-                                                      ({fredResults.length}{" "}
-                                                      results)
-                                                    </span>
-                                                  </div>
-                                                  {part.input?.query && (
-                                                    <div
-                                                      className="text-xs font-mono text-orange-700 dark:text-orange-300 bg-orange-50 dark:bg-orange-900/20 px-3 py-1 rounded border border-orange-200 dark:border-orange-700 max-w-[60%] truncate"
-                                                      title={part.input.query}
-                                                    >
-                                                      {part.input.query}
-                                                    </div>
-                                                  )}
-                                                </div>
-
-                                                {hasResults &&
-                                                fredResults.length > 0 ? (
-                                                  <SearchResultsCarousel
-                                                    results={fredResults}
-                                                    type="web"
-                                                    messageId={message.id}
-                                                    toolName="getFREDSeriesData"
-                                                  />
-                                                ) : (
-                                                  <div className="text-center py-8">
-                                                    <div className="text-orange-600 dark:text-orange-400 text-sm">
-                                                      No results retrieved
-                                                    </div>
-                                                  </div>
-                                                )}
-                                              </div>
-                                            );
-                                          case "error":
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-2 sm:p-3"
-                                              >
-                                                <div className="flex items-center gap-2 text-blue-700 dark:text-blue-400 mb-2">
-                                                  <XCircle className="h-4 w-4" />
-                                                  <span className="font-medium">
-                                                    FRED Data Fetch Failed
-                                                  </span>
-                                                </div>
-                                                <div className="text-sm text-blue-600 dark:text-blue-300">
-                                                  {part.errorText}
-                                                </div>
-                                              </div>
-                                            );
-                                        }
-                                        break;
-                                      }
-                                      // Get BLS Series Data Tool
-                                      case "tool-getBLSSeriesData": {
-                                        const callId = part.toolCallId;
-                                        switch (part.state) {
-                                          case "input-streaming":
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-2 sm:p-3"
-                                              >
-                                                <div className="flex items-center gap-2 text-blue-700 dark:text-blue-400 mb-2">
-                                                  <span className="text-lg">
-                                                    📊
-                                                  </span>
-                                                  <span className="font-medium">
-                                                    Fetching BLS Series Data
-                                                  </span>
-                                                  <Clock className="h-3 w-3 animate-spin" />
-                                                </div>
-                                                <div className="text-sm text-blue-600 dark:text-blue-300">
-                                                  Fetching time series data...
-                                                </div>
-                                              </div>
-                                            );
-                                          case "input-available":
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-2 sm:p-3"
-                                              >
-                                                <div className="flex items-center gap-2 text-blue-700 dark:text-blue-400 mb-2">
-                                                  <span className="text-lg">
-                                                    📊
-                                                  </span>
-                                                  <span className="font-medium">
-                                                    Fetching BLS Series Data
-                                                  </span>
-                                                  <Clock className="h-3 w-3 animate-spin" />
-                                                </div>
-                                                <div className="text-sm text-blue-600 dark:text-blue-300">
-                                                  <div className="bg-blue-100 dark:bg-blue-800/30 p-2 rounded">
-                                                    <div className="text-xs">
-                                                      Query: &quot;
-                                                      {part.input.query}&quot;
-                                                    </div>
-                                                  </div>
-                                                  <div className="mt-2 text-xs">
-                                                    Fetching BLS time series
-                                                    data...
-                                                  </div>
-                                                </div>
-                                              </div>
-                                            );
-                                          case "output-available":
-                                            const blsData = part.output;
-
-                                            // Parse the BLS data to handle multiple results
-                                            let parsedBLSResults = [];
-                                            let hasResults = true;
-
-                                            try {
-                                              if (typeof blsData === "string") {
-                                                // Check if it's an error message (starts with emoji or error text)
-                                                if (
-                                                  blsData.startsWith("❌") ||
-                                                  blsData.startsWith("Error") ||
-                                                  blsData.startsWith("🔐")
-                                                ) {
-                                                  hasResults = false;
-                                                  parsedBLSResults = [];
-                                                } else {
-                                                  const parsed =
-                                                    JSON.parse(blsData);
-
-                                                  // Check if it's a "no results" response
-                                                  if (parsed.found === false) {
-                                                    hasResults = false;
-                                                    parsedBLSResults = [];
-                                                  } else {
-                                                    // BLS tool returns a single object, not an array
-                                                    parsedBLSResults = [parsed];
-                                                  }
-                                                }
-                                              } else if (
-                                                Array.isArray(blsData)
-                                              ) {
-                                                parsedBLSResults = blsData;
-                                              } else {
-                                                parsedBLSResults = [blsData];
-                                              }
-                                            } catch (error) {
-                                              // If JSON parsing fails, treat as error
-                                              hasResults = false;
-                                              parsedBLSResults = [];
-                                            }
-
-                                            // Format results for SearchResultsCarousel
-                                            const blsResults =
-                                              parsedBLSResults.map(
-                                                (result, index) => {
-                                                  const parsedResult =
-                                                    typeof result === "string"
-                                                      ? JSON.parse(result)
-                                                      : result;
-                                                  return {
-                                                    id: `${callId}-${index}`,
-                                                    title:
-                                                      parsedResult.title ||
-                                                      `BLS Series Data ${
-                                                        index + 1
-                                                      }`,
-                                                    content:
-                                                      parsedResult.content ||
-                                                      (typeof result ===
-                                                      "string"
-                                                        ? result
-                                                        : JSON.stringify(
-                                                            result,
-                                                            null,
-                                                            2
-                                                          )),
-                                                    fullContent:
-                                                      parsedResult.content ||
-                                                      (typeof result ===
-                                                      "string"
-                                                        ? result
-                                                        : JSON.stringify(
-                                                            result,
-                                                            null,
-                                                            2
-                                                          )),
-                                                    summary:
-                                                      parsedResult.content &&
-                                                      typeof parsedResult.content ===
-                                                        "string"
-                                                        ? parsedResult.content.substring(
-                                                            0,
-                                                            200
-                                                          ) + "..."
-                                                        : typeof result ===
-                                                          "string"
-                                                        ? result.substring(
-                                                            0,
-                                                            200
-                                                          ) + "..."
-                                                        : JSON.stringify(
-                                                            result,
-                                                            null,
-                                                            2
-                                                          ).substring(0, 200) +
-                                                          "...",
-                                                    url:
-                                                      parsedResult.url || "#",
-                                                    dataType: "bls_data",
-                                                    source:
-                                                      parsedResult.source ||
-                                                      "BLS",
-                                                    date:
-                                                      parsedResult.date ||
-                                                      new Date().toISOString(),
-                                                    isStructured: true,
-                                                    metadata: {
-                                                      seriesId:
-                                                        part.input?.seriesId ||
-                                                        "Unknown",
-                                                      toolType:
-                                                        "getBLSSeriesData",
-                                                    },
-                                                  };
-                                                }
-                                              );
-
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-3 sm:p-4"
-                                              >
-                                                <div className="flex items-center justify-between gap-3 mb-4">
-                                                  <div className="flex items-center gap-2 text-blue-700 dark:text-blue-400">
-                                                    <CheckCircle className="h-4 w-4" />
-                                                    <span className="font-medium">
-                                                      BLS Series Data Retrieved
-                                                    </span>
-                                                    <span className="text-xs text-blue-600 dark:text-blue-300">
-                                                      ({blsResults.length}{" "}
-                                                      results)
-                                                    </span>
-                                                  </div>
-                                                  {part.input?.query && (
-                                                    <div
-                                                      className="text-xs font-mono text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/20 px-3 py-1 rounded border border-blue-200 dark:border-blue-700 max-w-[60%] truncate"
-                                                      title={part.input.query}
-                                                    >
-                                                      {part.input.query}
-                                                    </div>
-                                                  )}
-                                                </div>
-
-                                                {hasResults &&
-                                                blsResults.length > 0 ? (
-                                                  <SearchResultsCarousel
-                                                    results={blsResults}
-                                                    type="web"
-                                                    messageId={message.id}
-                                                    toolName="getBLSSeriesData"
-                                                  />
-                                                ) : (
-                                                  <div className="text-center py-8">
-                                                    <div className="text-blue-600 dark:text-blue-400 text-sm">
-                                                      No results retrieved
-                                                    </div>
-                                                  </div>
-                                                )}
-                                              </div>
-                                            );
-                                          case "error":
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 sm:p-3"
-                                              >
-                                                <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
-                                                  <XCircle className="h-4 w-4" />
-                                                  <span className="font-medium">
-                                                    BLS Data Fetch Failed
-                                                  </span>
-                                                </div>
-                                                <div className="text-sm text-red-600 dark:text-red-300">
-                                                  {part.errorText}
-                                                </div>
-                                              </div>
-                                            );
-                                        }
-                                        break;
-                                      }
-                                      // Get World Bank Details Tool
-                                      case "tool-getWBDetails": {
-                                        const callId = part.toolCallId;
-                                        console.log(
-                                          "[Tool Rendering] getWBDetails tool call:",
-                                          {
-                                            callId,
-                                            state: part.state,
-                                            hasInput: !!part.input,
-                                            hasOutput: !!part.output,
-                                            inputQuery: part.input?.query,
-                                            outputType: typeof part.output,
-                                            outputLength:
-                                              part.output?.length || 0,
-                                          }
-                                        );
-                                        switch (part.state) {
-                                          case "input-streaming":
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded p-2 sm:p-3"
-                                              >
-                                                <div className="flex items-center gap-2 text-green-700 dark:text-green-400 mb-2">
-                                                  <span className="text-lg">
-                                                    📊
-                                                  </span>
-                                                  <span className="font-medium">
-                                                    Fetching World Bank Details
-                                                  </span>
-                                                  <Clock className="h-3 w-3 animate-spin" />
-                                                </div>
-                                                <div className="text-sm text-green-600 dark:text-green-300">
-                                                  Fetching World Bank data...
-                                                </div>
-                                              </div>
-                                            );
-                                          case "input-available":
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded p-2 sm:p-3"
-                                              >
-                                                <div className="flex items-center gap-2 text-green-700 dark:text-green-400 mb-2">
-                                                  <span className="text-lg">
-                                                    📊
-                                                  </span>
-                                                  <span className="font-medium">
-                                                    Fetching World Bank Details
-                                                  </span>
-                                                  <Clock className="h-3 w-3 animate-spin" />
-                                                </div>
-                                                <div className="text-sm text-green-600 dark:text-green-300">
-                                                  <div className="bg-green-100 dark:bg-green-800/30 p-2 rounded">
-                                                    <div className="text-xs">
-                                                      Query: &quot;
-                                                      {part.input.query}&quot;
-                                                    </div>
-                                                  </div>
-                                                  <div className="mt-2 text-xs">
-                                                    Fetching World Bank data...
-                                                  </div>
-                                                </div>
-                                              </div>
-                                            );
-                                          case "output-available":
-                                            const wbData = part.output;
-
-                                            console.log(
-                                              "[Tool Rendering] getWBDetails output-available:",
-                                              {
-                                                callId,
-                                                outputType: typeof wbData,
-                                                outputLength:
-                                                  wbData?.length || 0,
-                                                isString:
-                                                  typeof wbData === "string",
-                                                isArray: Array.isArray(wbData),
-                                                isObject:
-                                                  typeof wbData === "object" &&
-                                                  !Array.isArray(wbData),
-                                                rawOutput: wbData,
-                                              }
-                                            );
-
-                                            // Parse the WB data to handle multiple results
-                                            let parsedWBResults = [];
-                                            let hasResults = true;
-
-                                            try {
-                                              if (typeof wbData === "string") {
-                                                // Check if it's an error message (starts with emoji or error text)
-                                                if (
-                                                  wbData.startsWith("❌") ||
-                                                  wbData.startsWith("Error") ||
-                                                  wbData.startsWith("🔐")
-                                                ) {
-                                                  console.log(
-                                                    "[WB Debug] Error message detected"
-                                                  );
-                                                  hasResults = false;
-                                                  parsedWBResults = [];
-                                                } else {
-                                                  const parsed =
-                                                    JSON.parse(wbData);
-                                                  console.log(
-                                                    "[WB Debug] Parsed JSON:",
-                                                    parsed
-                                                  );
-
-                                                  // Check if it's a "no results" response
-                                                  if (parsed.found === false) {
-                                                    console.log(
-                                                      "[WB Debug] No results (found: false)"
-                                                    );
-                                                    hasResults = false;
-                                                    parsedWBResults = [];
-                                                  } else {
-                                                    console.log(
-                                                      "[WB Debug] Results found, wrapping in array"
-                                                    );
-                                                    // World Bank tool returns a single object, not an array
-                                                    parsedWBResults = [parsed];
-                                                  }
-                                                }
-                                              } else if (
-                                                Array.isArray(wbData)
-                                              ) {
-                                                console.log(
-                                                  "[WB Debug] Array detected"
-                                                );
-                                                parsedWBResults = wbData;
-                                              } else {
-                                                console.log(
-                                                  "[WB Debug] Object detected, wrapping in array"
-                                                );
-                                                parsedWBResults = [wbData];
-                                              }
-                                            } catch (error) {
-                                              // If JSON parsing fails, treat as error
-                                              console.log(
-                                                "[WB Debug] JSON parsing error:",
-                                                error
-                                              );
-                                              hasResults = false;
-                                              parsedWBResults = [];
-                                            }
-
-                                            console.log(
-                                              "[WB Debug] Final state:",
-                                              {
-                                                hasResults,
-                                                resultsCount:
-                                                  parsedWBResults.length,
-                                              }
-                                            );
-
-                                            // Format results for SearchResultsCarousel
-                                            const wbResults =
-                                              parsedWBResults.map(
-                                                (result, index) => {
-                                                  const parsedResult =
-                                                    typeof result === "string"
-                                                      ? JSON.parse(result)
-                                                      : result;
-                                                  return {
-                                                    id: `${callId}-${index}`,
-                                                    title:
-                                                      parsedResult.title ||
-                                                      `World Bank Data ${
-                                                        index + 1
-                                                      }`,
-                                                    content:
-                                                      parsedResult.content ||
-                                                      (typeof result ===
-                                                      "string"
-                                                        ? result
-                                                        : JSON.stringify(
-                                                            result,
-                                                            null,
-                                                            2
-                                                          )),
-                                                    fullContent:
-                                                      parsedResult.content ||
-                                                      (typeof result ===
-                                                      "string"
-                                                        ? result
-                                                        : JSON.stringify(
-                                                            result,
-                                                            null,
-                                                            2
-                                                          )),
-                                                    summary:
-                                                      parsedResult.content &&
-                                                      typeof parsedResult.content ===
-                                                        "string"
-                                                        ? parsedResult.content.substring(
-                                                            0,
-                                                            200
-                                                          ) + "..."
-                                                        : typeof result ===
-                                                          "string"
-                                                        ? result.substring(
-                                                            0,
-                                                            200
-                                                          ) + "..."
-                                                        : JSON.stringify(
-                                                            result,
-                                                            null,
-                                                            2
-                                                          ).substring(0, 200) +
-                                                          "...",
-                                                    url:
-                                                      parsedResult.url || "#",
-                                                    dataType: "worldbank_data",
-                                                    source:
-                                                      parsedResult.source ||
-                                                      "World Bank",
-                                                    date:
-                                                      parsedResult.date ||
-                                                      new Date().toISOString(),
-                                                    isStructured: true,
-                                                    metadata: {
-                                                      indicatorId:
-                                                        part.input?.query ||
-                                                        "Unknown",
-                                                      toolType: "getWBDetails",
-                                                    },
-                                                  };
-                                                }
-                                              );
-
-                                            console.log(
-                                              "[Tool Rendering] getWBDetails final rendering:",
-                                              {
-                                                callId,
-                                                hasResults,
-                                                resultsCount: wbResults.length,
-                                                willRenderCarousel:
-                                                  hasResults &&
-                                                  wbResults.length > 0,
-                                                results: wbResults.map((r) => ({
-                                                  id: r.id,
-                                                  title: r.title,
-                                                })),
-                                              }
-                                            );
-
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-3 sm:p-4"
-                                              >
-                                                <div className="flex items-center justify-between gap-3 mb-4">
-                                                  <div className="flex items-center gap-2 text-green-700 dark:text-green-400">
-                                                    <CheckCircle className="h-4 w-4" />
-                                                    <span className="font-medium">
-                                                      World Bank Data Retrieved
-                                                    </span>
-                                                    <span className="text-xs text-green-600 dark:text-green-300">
-                                                      ({wbResults.length}{" "}
-                                                      results)
-                                                    </span>
-                                                  </div>
-                                                  {part.input?.query && (
-                                                    <div
-                                                      className="text-xs font-mono text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/20 px-3 py-1 rounded border border-green-200 dark:border-green-700 max-w-[60%] truncate"
-                                                      title={part.input.query}
-                                                    >
-                                                      {part.input.query}
-                                                    </div>
-                                                  )}
-                                                </div>
-
-                                                {hasResults &&
-                                                wbResults.length > 0 ? (
-                                                  <SearchResultsCarousel
-                                                    results={wbResults}
-                                                    type="web"
-                                                    messageId={message.id}
-                                                    toolName="getWBDetails"
-                                                  />
-                                                ) : (
-                                                  <div className="text-center py-8">
-                                                    <div className="text-green-600 dark:text-green-400 text-sm">
-                                                      No results retrieved
-                                                    </div>
-                                                  </div>
-                                                )}
-                                              </div>
-                                            );
-                                          case "error":
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 sm:p-3"
-                                              >
-                                                <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
-                                                  <XCircle className="h-4 w-4" />
-                                                  <span className="font-medium">
-                                                    World Bank Data Fetch Failed
-                                                  </span>
-                                                </div>
-                                                <div className="text-sm text-red-600 dark:text-red-300">
-                                                  {part.errorText}
-                                                </div>
-                                              </div>
-                                            );
-                                        }
-                                        break;
-                                      }
-                                      // Get USA Spending Details Tool
-                                      case "tool-getUSASpendingDetails": {
-                                        const callId = part.toolCallId;
-                                        switch (part.state) {
-                                          case "input-streaming":
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded p-2 sm:p-3"
-                                              >
-                                                <div className="flex items-center gap-2 text-purple-700 dark:text-purple-400 mb-2">
-                                                  <span className="text-lg">
-                                                    💰
-                                                  </span>
-                                                  <span className="font-medium">
-                                                    Fetching USA Spending
-                                                    Details
-                                                  </span>
-                                                  <Clock className="h-3 w-3 animate-spin" />
-                                                </div>
-                                                <div className="text-sm text-purple-600 dark:text-purple-300">
-                                                  Fetching USA Spending data...
-                                                </div>
-                                              </div>
-                                            );
-                                          case "input-available":
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded p-2 sm:p-3"
-                                              >
-                                                <div className="flex items-center gap-2 text-purple-700 dark:text-purple-400 mb-2">
-                                                  <span className="text-lg">
-                                                    💰
-                                                  </span>
-                                                  <span className="font-medium">
-                                                    Fetching USA Spending
-                                                    Details
-                                                  </span>
-                                                  <Clock className="h-3 w-3 animate-spin" />
-                                                </div>
-                                                <div className="text-sm text-purple-600 dark:text-purple-300">
-                                                  <div className="bg-purple-100 dark:bg-purple-800/30 p-2 rounded">
-                                                    <div className="text-xs">
-                                                      Query: &quot;
-                                                      {part.input.query}&quot;
-                                                    </div>
-                                                  </div>
-                                                  <div className="mt-2 text-xs">
-                                                    Fetching USA Spending
-                                                    data...
-                                                  </div>
-                                                </div>
-                                              </div>
-                                            );
-                                          case "output-available":
-                                            const usaData = part.output;
-
-                                            // Parse the USA data to handle multiple results
-                                            let parsedUSAResults = [];
-                                            let hasResults = true;
-
-                                            try {
-                                              if (typeof usaData === "string") {
-                                                // Check if it's an error message (starts with emoji or error text)
-                                                if (
-                                                  usaData.startsWith("❌") ||
-                                                  usaData.startsWith("Error") ||
-                                                  usaData.startsWith("🔐")
-                                                ) {
-                                                  hasResults = false;
-                                                  parsedUSAResults = [];
-                                                } else {
-                                                  const parsed =
-                                                    JSON.parse(usaData);
-
-                                                  // Check if it's a "no results" response
-                                                  if (parsed.found === false) {
-                                                    hasResults = false;
-                                                    parsedUSAResults = [];
-                                                  } else {
-                                                    // USA Spending tool returns a single object, not an array
-                                                    parsedUSAResults = [parsed];
-                                                  }
-                                                }
-                                              } else if (
-                                                Array.isArray(usaData)
-                                              ) {
-                                                parsedUSAResults = usaData;
-                                              } else {
-                                                parsedUSAResults = [usaData];
-                                              }
-                                            } catch (error) {
-                                              // If JSON parsing fails, treat as error
-                                              hasResults = false;
-                                              parsedUSAResults = [];
-                                            }
-
-                                            // Format results for SearchResultsCarousel
-                                            const usaResults =
-                                              parsedUSAResults.map(
-                                                (result, index) => {
-                                                  const parsedResult =
-                                                    typeof result === "string"
-                                                      ? JSON.parse(result)
-                                                      : result;
-                                                  return {
-                                                    id: `${callId}-${index}`,
-                                                    title:
-                                                      parsedResult.title ||
-                                                      `USA Spending Data ${
-                                                        index + 1
-                                                      }`,
-                                                    content:
-                                                      parsedResult.content ||
-                                                      (typeof result ===
-                                                      "string"
-                                                        ? result
-                                                        : JSON.stringify(
-                                                            result,
-                                                            null,
-                                                            2
-                                                          )),
-                                                    fullContent:
-                                                      parsedResult.content ||
-                                                      (typeof result ===
-                                                      "string"
-                                                        ? result
-                                                        : JSON.stringify(
-                                                            result,
-                                                            null,
-                                                            2
-                                                          )),
-                                                    summary:
-                                                      parsedResult.content &&
-                                                      typeof parsedResult.content ===
-                                                        "string"
-                                                        ? parsedResult.content.substring(
-                                                            0,
-                                                            200
-                                                          ) + "..."
-                                                        : typeof result ===
-                                                          "string"
-                                                        ? result.substring(
-                                                            0,
-                                                            200
-                                                          ) + "..."
-                                                        : JSON.stringify(
-                                                            result,
-                                                            null,
-                                                            2
-                                                          ).substring(0, 200) +
-                                                          "...",
-                                                    url:
-                                                      parsedResult.url || "#",
-                                                    dataType:
-                                                      "usaspending_data",
-                                                    source:
-                                                      parsedResult.source ||
-                                                      "USA Spending",
-                                                    date:
-                                                      parsedResult.date ||
-                                                      new Date().toISOString(),
-                                                    isStructured: true,
-                                                    metadata: {
-                                                      usaspendingId:
-                                                        part.input
-                                                          ?.usaspendingId ||
-                                                        "Unknown",
-                                                      toolType:
-                                                        "getUSASpendingDetails",
-                                                    },
-                                                  };
-                                                }
-                                              );
-
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg p-3 sm:p-4"
-                                              >
-                                                <div className="flex items-center justify-between gap-3 mb-4">
-                                                  <div className="flex items-center gap-2 text-purple-700 dark:text-purple-400">
-                                                    <CheckCircle className="h-4 w-4" />
-                                                    <span className="font-medium">
-                                                      USA Spending Data
-                                                      Retrieved
-                                                    </span>
-                                                    <span className="text-xs text-purple-600 dark:text-purple-300">
-                                                      ({usaResults.length}{" "}
-                                                      results)
-                                                    </span>
-                                                  </div>
-                                                  {part.input?.query && (
-                                                    <div
-                                                      className="text-xs font-mono text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-900/20 px-3 py-1 rounded border border-purple-200 dark:border-purple-700 max-w-[60%] truncate"
-                                                      title={part.input.query}
-                                                    >
-                                                      {part.input.query}
-                                                    </div>
-                                                  )}
-                                                </div>
-
-                                                {hasResults &&
-                                                usaResults.length > 0 ? (
-                                                  <SearchResultsCarousel
-                                                    results={usaResults}
-                                                    type="web"
-                                                    messageId={message.id}
-                                                    toolName="getUSASpendingDetails"
-                                                  />
-                                                ) : (
-                                                  <div className="text-center py-8">
-                                                    <div className="text-purple-600 dark:text-purple-400 text-sm">
-                                                      No results retrieved
-                                                    </div>
-                                                  </div>
-                                                )}
-                                              </div>
-                                            );
-                                          case "error":
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 sm:p-3"
-                                              >
-                                                <div className="flex items-center gap-2 text-red-700 dark:text-red-400 mb-2">
-                                                  <XCircle className="h-4 w-4" />
-                                                  <span className="font-medium">
-                                                    USA Spending Data Fetch
-                                                    Failed
-                                                  </span>
-                                                </div>
-                                                <div className="text-sm text-red-600 dark:text-red-300">
-                                                  {part.errorText}
-                                                </div>
-                                              </div>
-                                            );
-                                        }
-                                        break;
-                                      }
-                                      // Comprehensive Search Tool
-                                      case "tool-comprehensiveSearch": {
-                                        const callId = part.toolCallId;
-                                        switch (part.state) {
-                                          case "input-streaming":
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 rounded p-2 sm:p-3"
-                                              >
-                                                <div className="flex items-center gap-2 text-indigo-700 dark:text-indigo-400 mb-2">
-                                                  <span className="text-lg">
-                                                    🧬
-                                                  </span>
-                                                  <span className="font-medium">
-                                                    {part.type ===
-                                                      "tool-createChart" &&
-                                                      "Creating Chart"}
-                                                    {part.type ===
-                                                      "tool-codeExecution" &&
-                                                      "Executing Code"}
-                                                    {part.type ===
-                                                      "tool-economicsSearch" &&
-                                                      "Searching Economics Data"}
-                                                    {part.type ===
-                                                      "tool-FREDSearch" &&
-                                                      "Searching FRED Database"}
                                                     {part.type ===
                                                       "tool-getFREDSeriesData" &&
-                                                      "Fetching FRED Series Data"}
+                                                      "Searching FRED Series"}
                                                     {part.type ===
                                                       "tool-getBLSSeriesData" &&
-                                                      "Fetching BLS Series Data"}
+                                                      "Searching BLS Series"}
                                                     {part.type ===
                                                       "tool-getWBDetails" &&
-                                                      "Fetching World Bank Details"}
+                                                      "Searching World Bank Data"}
                                                     {part.type ===
                                                       "tool-getUSASpendingDetails" &&
-                                                      "Fetching USA Spending Details"}
-                                                    {part.type ===
-                                                      "tool-webSearch" &&
-                                                      "Searching Web"}
+                                                      "Fetching USAspending Data"}
                                                   </span>
                                                   <Clock className="h-3 w-3 animate-spin" />
                                                 </div>
-                                                <div className="text-sm text-indigo-600 dark:text-indigo-300">
-                                                  Searching databases...
-                                                </div>
-                                              </div>
-                                            );
-                                          case "input-available":
-                                            return (
-                                              <div
-                                                key={callId}
-                                                className="mt-2 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 rounded p-2 sm:p-3"
-                                              >
-                                                <div className="flex items-center gap-2 text-indigo-700 dark:text-indigo-400 mb-2">
-                                                  <span className="text-lg">
-                                                    🧬
-                                                  </span>
-                                                  <span className="font-medium">
-                                                    {part.type ===
-                                                      "tool-createChart" &&
-                                                      "Creating Chart"}
-                                                    {part.type ===
-                                                      "tool-codeExecution" &&
-                                                      "Executing Code"}
-                                                    {part.type ===
-                                                      "tool-economicsSearch" &&
-                                                      "Searching Economics Data"}
-                                                    {part.type ===
-                                                      "tool-FREDSearch" &&
-                                                      "Searching FRED Database"}
-                                                    {part.type ===
-                                                      "tool-getFREDSeriesData" &&
-                                                      "Fetching FRED Series Data"}
-                                                    {part.type ===
-                                                      "tool-getBLSSeriesData" &&
-                                                      "Fetching BLS Series Data"}
-                                                    {part.type ===
-                                                      "tool-getWBDetails" &&
-                                                      "Fetching World Bank Details"}
-                                                    {part.type ===
-                                                      "tool-getUSASpendingDetails" &&
-                                                      "Fetching USA Spending Details"}
-                                                    {part.type ===
-                                                      "tool-webSearch" &&
-                                                      "Searching Web"}
-                                                  </span>
-                                                  <Clock className="h-3 w-3 animate-spin" />
-                                                </div>
-                                                <div className="text-sm text-indigo-600 dark:text-indigo-300">
-                                                  <div className="bg-indigo-100 dark:bg-indigo-800/30 p-2 rounded">
+                                                <div className="text-sm text-yellow-600 dark:text-yellow-300">
+                                                  <div className="bg-yellow-100 dark:bg-yellow-800/30 p-2 rounded">
                                                     <div className="font-mono text-xs">
-                                                      {part.type ===
-                                                      "tool-parsePdfFromUrl" ? (
-                                                        <>
-                                                          NCT ID:{" "}
-                                                          {part.input.nctId ||
-                                                            "N/A"}
-                                                        </>
-                                                      ) : (
+                                                      {"query" in part.input ||
+                                                      "seriesId" in
+                                                        part.input ? (
                                                         <>
                                                           Query: &quot;
                                                           {part.input.query ||
+                                                            part.input
+                                                              .seriesId ||
                                                             "N/A"}
                                                           &quot;
-                                                          {part.input
-                                                            .maxResults && (
-                                                            <>
-                                                              <br />
-                                                              Max Results:{" "}
-                                                              {
-                                                                part.input
-                                                                  .maxResults
-                                                              }
-                                                            </>
+                                                          {"maxResults" in
+                                                            part.input &&
+                                                            part.input
+                                                              .maxResults && (
+                                                              <>
+                                                                <br />
+                                                                Max Results:{" "}
+                                                                {
+                                                                  part.input
+                                                                    .maxResults
+                                                                }
+                                                              </>
+                                                            )}
+                                                        </>
+                                                      ) : (
+                                                        <>
+                                                          {JSON.stringify(
+                                                            part.input
                                                           )}
                                                         </>
                                                       )}
                                                     </div>
                                                   </div>
                                                   <div className="mt-2 text-xs">
-                                                    Retrieving data from
-                                                    specialized sources...
+                                                    Retrieving economic data
+                                                    from specialized sources...
                                                   </div>
                                                 </div>
                                               </div>
                                             );
-                                          case "output-available":
-                                            // Special handling for getClinicalTrialDetails
+                                          case "output-available": {
+                                            // Parse output results for economic tools and gracefully display raw content when structured parsing fails
+                                            let economicResults: any[] = [];
+                                            let fallbackContent: string | null =
+                                              null;
+
+                                            const ensureString = (
+                                              value: any
+                                            ) => {
+                                              if (
+                                                value === null ||
+                                                value === undefined
+                                              )
+                                                return "";
+                                              return typeof value === "string"
+                                                ? value
+                                                : (() => {
+                                                    try {
+                                                      return JSON.stringify(
+                                                        value,
+                                                        null,
+                                                        2
+                                                      );
+                                                    } catch {
+                                                      return String(value);
+                                                    }
+                                                  })();
+                                            };
+
+                                            const tryParseNestedJSON = (
+                                              value: string,
+                                              maxDepth = 4
+                                            ): any => {
+                                              if (typeof value !== "string")
+                                                return null;
+                                              let current: any = value;
+                                              for (
+                                                let attempt = 0;
+                                                attempt < maxDepth;
+                                                attempt++
+                                              ) {
+                                                const trimmed =
+                                                  typeof current === "string"
+                                                    ? current.trim()
+                                                    : current;
+
+                                                if (
+                                                  typeof trimmed !== "string"
+                                                ) {
+                                                  return trimmed;
+                                                }
+
+                                                if (!trimmed) return null;
+
+                                                // Attempt direct JSON.parse
+                                                try {
+                                                  const parsed =
+                                                    JSON.parse(trimmed);
+                                                  if (
+                                                    typeof parsed === "string"
+                                                  ) {
+                                                    current = parsed;
+                                                    continue;
+                                                  }
+                                                  return parsed;
+                                                } catch {
+                                                  // Remove wrapping quotes if present and try again
+                                                  if (
+                                                    (trimmed.startsWith('"') &&
+                                                      trimmed.endsWith('"')) ||
+                                                    (trimmed.startsWith("'") &&
+                                                      trimmed.endsWith("'"))
+                                                  ) {
+                                                    current = trimmed.slice(
+                                                      1,
+                                                      -1
+                                                    );
+                                                    continue;
+                                                  }
+
+                                                  // Attempt to unescape common escaped quotes
+                                                  const unescaped = trimmed
+                                                    .replace(/\\"/g, '"')
+                                                    .replace(/\\n/g, "\n")
+                                                    .replace(/\\r/g, "\r")
+                                                    .replace(/\\t/g, "\t");
+
+                                                  if (unescaped !== trimmed) {
+                                                    current = unescaped;
+                                                    continue;
+                                                  }
+
+                                                  break;
+                                                }
+                                              }
+                                              return null;
+                                            };
+
+                                            const buildSeriesUrl = (
+                                              meta: any
+                                            ) => {
+                                              if (
+                                                meta?.url &&
+                                                typeof meta.url === "string"
+                                              ) {
+                                                return meta.url;
+                                              }
+                                              const seriesId =
+                                                meta?.seriesId ||
+                                                meta?.series_id ||
+                                                (typeof part.input ===
+                                                  "object" &&
+                                                part.input !== null &&
+                                                "seriesId" in part.input
+                                                  ? (part.input as any).seriesId
+                                                  : undefined);
+                                              if (seriesId) {
+                                                return `https://fred.stlouisfed.org/series/${seriesId}`;
+                                              }
+                                              if (meta?.dataset_id) {
+                                                return `https://api.bls.gov/series/${meta.dataset_id}`;
+                                              }
+                                              return "https://valyu.ai";
+                                            };
+
+                                            const buildSeriesResult = (
+                                              values: any[],
+                                              meta: any
+                                            ) => {
+                                              if (
+                                                !Array.isArray(values) ||
+                                                values.length === 0
+                                              ) {
+                                                return null;
+                                              }
+
+                                              const pickLabel = (entry: any) =>
+                                                entry?.date ||
+                                                entry?.period ||
+                                                entry?.x ||
+                                                entry?.time ||
+                                                entry?.label ||
+                                                null;
+
+                                              const firstEntry =
+                                                values.find((item: any) =>
+                                                  pickLabel(item)
+                                                ) || values[0];
+                                              const lastEntry =
+                                                [...values]
+                                                  .reverse()
+                                                  .find((item: any) =>
+                                                    pickLabel(item)
+                                                  ) ||
+                                                values[values.length - 1];
+
+                                              const firstLabel =
+                                                pickLabel(firstEntry);
+                                              const lastLabel =
+                                                pickLabel(lastEntry);
+
+                                              const candidateTitle =
+                                                meta?.title ||
+                                                meta?.name ||
+                                                meta?.series_name ||
+                                                meta?.seriesTitle ||
+                                                meta?.series_id ||
+                                                meta?.seriesId ||
+                                                (typeof part.input ===
+                                                  "object" &&
+                                                part.input !== null &&
+                                                "seriesId" in part.input
+                                                  ? (part.input as any).seriesId
+                                                  : undefined) ||
+                                                (typeof part.input ===
+                                                  "object" &&
+                                                part.input !== null &&
+                                                "query" in part.input
+                                                  ? (part.input as any).query
+                                                  : undefined) ||
+                                                "Economic Series";
+
+                                              const summaryPieces: string[] =
+                                                [];
+                                              if (meta?.note)
+                                                summaryPieces.push(meta.note);
+                                              summaryPieces.push(
+                                                `${values.length} data points`
+                                              );
+                                              if (
+                                                firstLabel &&
+                                                lastLabel &&
+                                                firstLabel !== lastLabel
+                                              ) {
+                                                summaryPieces.push(
+                                                  `${firstLabel} → ${lastLabel}`
+                                                );
+                                              }
+
+                                              const metadata = {
+                                                title: meta?.title,
+                                                note: meta?.note,
+                                                query: meta?.query,
+                                                seriesId:
+                                                  meta?.seriesId ||
+                                                  meta?.series_id ||
+                                                  (typeof part.input ===
+                                                    "object" &&
+                                                  part.input !== null &&
+                                                  "seriesId" in part.input
+                                                    ? (part.input as any)
+                                                        .seriesId
+                                                    : undefined),
+                                                units:
+                                                  meta?.units || meta?.unit,
+                                                frequency: meta?.frequency,
+                                              };
+
+                                              return {
+                                                id:
+                                                  meta?.seriesId ||
+                                                  meta?.series_id ||
+                                                  meta?.id ||
+                                                  part.toolCallId ||
+                                                  `economic-${callId}`,
+                                                title: candidateTitle,
+                                                summary:
+                                                  summaryPieces.join(" • "),
+                                                dataType: "time-series",
+                                                isStructured: true,
+                                                fullContent: {
+                                                  metadata,
+                                                  values,
+                                                },
+                                                url: buildSeriesUrl(meta),
+                                                source: meta?.source,
+                                              };
+                                            };
+
+                                            let parsed: any = null;
                                             if (
-                                              part.type ===
-                                              "tool-parsePdfFromUrl"
+                                              typeof part.output === "string"
                                             ) {
                                               try {
-                                                const detailData = JSON.parse(
+                                                parsed = JSON.parse(
                                                   part.output
                                                 );
-
-                                                // Convert single trial detail to array format for display
-                                                const detailResults =
-                                                  detailData.found &&
-                                                  detailData.data
-                                                    ? [
-                                                        {
-                                                          id:
-                                                            detailData.nctId ||
-                                                            detailData.data
-                                                              .nct_id,
-                                                          title:
-                                                            detailData.title ||
-                                                            detailData.data
-                                                              .brief_title ||
-                                                            detailData.data
-                                                              .official_title ||
-                                                            "Clinical Trial",
-                                                          summary:
-                                                            detailData.data
-                                                              .brief_summary ||
-                                                            "No summary available",
-                                                          source:
-                                                            "ClinicalTrials.gov",
-                                                          date:
-                                                            detailData.data
-                                                              .start_date || "",
-                                                          url:
-                                                            detailData.url ||
-                                                            "",
-                                                          fullContent:
-                                                            JSON.stringify(
-                                                              detailData.data
-                                                            ),
-                                                          dataType:
-                                                            "clinical_trials",
-                                                          nctId:
-                                                            detailData.nctId ||
-                                                            detailData.data
-                                                              .nct_id,
-                                                          status:
-                                                            detailData.data
-                                                              .overall_status,
-                                                          phase:
-                                                            detailData.data
-                                                              .phases,
-                                                          relevanceScore: 1,
-                                                        },
-                                                      ]
-                                                    : [];
-
-                                                return (
-                                                  <div
-                                                    key={callId}
-                                                    className="mt-2 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 rounded-lg p-3 sm:p-4"
-                                                  >
-                                                    <div className="flex items-center justify-between gap-3 mb-4">
-                                                      <div className="flex items-center gap-2 text-indigo-700 dark:text-indigo-400">
-                                                        <CheckCircle className="h-4 w-4" />
-                                                        <span className="font-medium">
-                                                          Clinical Trial Details
-                                                        </span>
-                                                      </div>
-                                                      {detailData.found && (
-                                                        <span className="text-xs text-indigo-600 dark:text-indigo-400">
-                                                          {detailData.nctId}
-                                                        </span>
-                                                      )}
-                                                    </div>
-                                                    {part.input?.query && (
-                                                      <div className="text-xs text-indigo-600 dark:text-indigo-400 bg-indigo-100 dark:bg-indigo-800/30 px-2 py-1 rounded mb-2">
-                                                        &quot;{part.input.query}
-                                                        &quot;
-                                                      </div>
-                                                    )}
-                                                    {detailResults.length >
-                                                    0 ? (
-                                                      <SearchResultsCarousel
-                                                        results={detailResults}
-                                                        type="web"
-                                                        toolName="getClinicalTrialDetails"
-                                                        messageId={message.id}
-                                                      />
-                                                    ) : (
-                                                      <div className="text-sm text-gray-500">
-                                                        {detailData.message ||
-                                                          "No trial found"}
-                                                      </div>
-                                                    )}
-                                                  </div>
+                                              } catch {
+                                                fallbackContent = ensureString(
+                                                  part.output
                                                 );
-                                              } catch (e) {
-                                                console.error(
-                                                  "Failed to parse clinical trial details:",
-                                                  e
+                                              }
+                                            } else if (
+                                              part.output &&
+                                              typeof part.output === "object"
+                                            ) {
+                                              parsed = part.output;
+                                            } else if (
+                                              part.output !== null &&
+                                              part.output !== undefined
+                                            ) {
+                                              fallbackContent = ensureString(
+                                                part.output
+                                              );
+                                            }
+
+                                            if (
+                                              parsed &&
+                                              typeof parsed === "object"
+                                            ) {
+                                              const candidateArrays = [
+                                                parsed.results,
+                                                parsed.data,
+                                                parsed.values,
+                                                parsed.entries,
+                                                parsed.series,
+                                                parsed.series?.data,
+                                                parsed.series?.values,
+                                                parsed.series?.observations,
+                                                parsed.data?.results,
+                                                parsed.data?.values,
+                                                parsed.data?.observations,
+                                              ];
+
+                                              const isSeriesTool =
+                                                part.type ===
+                                                  "tool-getFREDSeriesData" ||
+                                                part.type ===
+                                                  "tool-getBLSSeriesData" ||
+                                                part.type ===
+                                                  "tool-getUSASpendingDetails";
+
+                                              let handled = false;
+                                              for (const candidate of candidateArrays) {
+                                                if (
+                                                  Array.isArray(candidate) &&
+                                                  candidate.length > 0
+                                                ) {
+                                                  if (isSeriesTool) {
+                                                    const seriesResult =
+                                                      buildSeriesResult(
+                                                        candidate,
+                                                        parsed
+                                                      );
+                                                    if (seriesResult) {
+                                                      economicResults = [
+                                                        seriesResult,
+                                                      ];
+                                                      handled = true;
+                                                      break;
+                                                    }
+                                                  }
+                                                  economicResults = candidate;
+                                                  handled = true;
+                                                  break;
+                                                }
+                                              }
+
+                                              if (
+                                                !handled &&
+                                                parsed.data &&
+                                                typeof parsed.data === "object"
+                                              ) {
+                                                const dataPayload = parsed.data;
+                                                const innerArrays = [
+                                                  dataPayload.values,
+                                                  dataPayload.observations,
+                                                  dataPayload.data,
+                                                  dataPayload.results,
+                                                ];
+                                                const innerArray =
+                                                  innerArrays.find(
+                                                    (candidate: any) =>
+                                                      Array.isArray(
+                                                        candidate
+                                                      ) && candidate.length > 0
+                                                  );
+
+                                                if (
+                                                  innerArray &&
+                                                  isSeriesTool
+                                                ) {
+                                                  const seriesResult =
+                                                    buildSeriesResult(
+                                                      innerArray,
+                                                      {
+                                                        ...parsed,
+                                                        ...dataPayload,
+                                                      }
+                                                    );
+                                                  if (seriesResult) {
+                                                    economicResults = [
+                                                      seriesResult,
+                                                    ];
+                                                    handled = true;
+                                                  }
+                                                }
+
+                                                if (!handled) {
+                                                  economicResults = [
+                                                    {
+                                                      id:
+                                                        parsed.seriesId ||
+                                                        parsed.series_id ||
+                                                        parsed.query ||
+                                                        part.toolCallId ||
+                                                        `economic-${callId}`,
+                                                      title:
+                                                        parsed.title ||
+                                                        (typeof part.input ===
+                                                          "object" &&
+                                                        part.input !== null &&
+                                                        "query" in part.input
+                                                          ? (part.input as any)
+                                                              .query
+                                                          : "Economic Data"),
+                                                      summary:
+                                                        parsed.note ||
+                                                        `Structured response with ${
+                                                          Object.keys(
+                                                            dataPayload
+                                                          ).length
+                                                        } fields`,
+                                                      dataType: "JSON",
+                                                      isStructured: true,
+                                                      fullContent: dataPayload,
+                                                      url: buildSeriesUrl(
+                                                        parsed
+                                                      ),
+                                                    },
+                                                  ];
+                                                  handled = true;
+                                                }
+                                              }
+
+                                              if (!handled && parsed.content) {
+                                                const contentString =
+                                                  ensureString(parsed.content);
+                                                const parsedContent =
+                                                  typeof parsed.content ===
+                                                  "object"
+                                                    ? parsed.content
+                                                    : tryParseNestedJSON(
+                                                        contentString
+                                                      );
+
+                                                if (parsedContent) {
+                                                  const candidateArray =
+                                                    (Array.isArray(
+                                                      parsedContent
+                                                    ) &&
+                                                      parsedContent) ||
+                                                    (Array.isArray(
+                                                      (parsedContent as any)
+                                                        .data
+                                                    ) &&
+                                                      (parsedContent as any)
+                                                        .data) ||
+                                                    (Array.isArray(
+                                                      (parsedContent as any)
+                                                        .values
+                                                    ) &&
+                                                      (parsedContent as any)
+                                                        .values);
+
+                                                  if (
+                                                    candidateArray &&
+                                                    candidateArray.length > 0
+                                                  ) {
+                                                    if (isSeriesTool) {
+                                                      const seriesResult =
+                                                        buildSeriesResult(
+                                                          candidateArray,
+                                                          {
+                                                            ...parsed,
+                                                            ...(typeof parsedContent ===
+                                                            "object"
+                                                              ? parsedContent
+                                                              : {}),
+                                                          }
+                                                        );
+                                                      if (seriesResult) {
+                                                        economicResults = [
+                                                          seriesResult,
+                                                        ];
+                                                        handled = true;
+                                                      }
+                                                    } else {
+                                                      economicResults =
+                                                        candidateArray;
+                                                      handled = true;
+                                                    }
+                                                  }
+
+                                                  if (
+                                                    !handled &&
+                                                    typeof parsedContent ===
+                                                      "object"
+                                                  ) {
+                                                    economicResults = [
+                                                      {
+                                                        id:
+                                                          parsed.seriesId ||
+                                                          parsed.series_id ||
+                                                          parsed.query ||
+                                                          part.toolCallId ||
+                                                          `economic-${callId}`,
+                                                        title:
+                                                          parsed.title ||
+                                                          parsed.seriesId ||
+                                                          parsed.query ||
+                                                          (typeof part.input ===
+                                                            "object" &&
+                                                          part.input !== null &&
+                                                          "query" in part.input
+                                                            ? (
+                                                                part.input as any
+                                                              ).query
+                                                            : "Economic Data"),
+                                                        summary:
+                                                          parsed.note ||
+                                                          `Structured response with ${
+                                                            Object.keys(
+                                                              parsedContent as Record<
+                                                                string,
+                                                                unknown
+                                                              >
+                                                            ).length
+                                                          } fields`,
+                                                        dataType: "JSON",
+                                                        isStructured: true,
+                                                        fullContent:
+                                                          parsedContent,
+                                                        url: buildSeriesUrl(
+                                                          parsed
+                                                        ),
+                                                      },
+                                                    ];
+                                                    handled = true;
+                                                  }
+                                                }
+
+                                                if (!handled) {
+                                                  fallbackContent =
+                                                    contentString;
+                                                  economicResults = [
+                                                    {
+                                                      id:
+                                                        parsed.seriesId ||
+                                                        parsed.series_id ||
+                                                        parsed.query ||
+                                                        part.toolCallId ||
+                                                        `economic-${callId}`,
+                                                      title:
+                                                        parsed.title ||
+                                                        parsed.seriesId ||
+                                                        parsed.query ||
+                                                        (typeof part.input ===
+                                                          "object" &&
+                                                        part.input !== null &&
+                                                        "query" in part.input
+                                                          ? (part.input as any)
+                                                              .query
+                                                          : "Economic Data"),
+                                                      summary:
+                                                        parsed.note ||
+                                                        "Raw response returned by data provider.",
+                                                      dataType: "text",
+                                                      isStructured: false,
+                                                      fullContent:
+                                                        contentString,
+                                                      url: buildSeriesUrl(
+                                                        parsed
+                                                      ),
+                                                      length:
+                                                        contentString.length,
+                                                    },
+                                                  ];
+                                                  handled = true;
+                                                }
+                                              }
+
+                                              if (!handled && parsed.message) {
+                                                fallbackContent = ensureString(
+                                                  parsed.message
                                                 );
+                                              } else if (
+                                                !handled &&
+                                                !economicResults.length
+                                              ) {
+                                                fallbackContent =
+                                                  ensureString(parsed);
                                               }
                                             }
 
-                                            // Regular handling for other tools
-                                            const searchResults =
-                                              extractSearchResults(part.output);
+                                            if (
+                                              !economicResults.length &&
+                                              !fallbackContent &&
+                                              typeof part.output === "string"
+                                            ) {
+                                              fallbackContent = ensureString(
+                                                part.output
+                                              );
+                                            }
+
+                                            const fallbackNode =
+                                              fallbackContent &&
+                                              fallbackContent.trim().length >
+                                                0 ? (
+                                                <pre className="text-xs text-yellow-800 dark:text-yellow-200 bg-yellow-100 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded p-2 max-h-64 overflow-y-auto whitespace-pre-wrap">
+                                                  {fallbackContent}
+                                                </pre>
+                                              ) : null;
+
                                             return (
                                               <div
                                                 key={callId}
-                                                className="mt-2 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 rounded-lg p-3 sm:p-4"
+                                                className="mt-2 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3 sm:p-4"
                                               >
                                                 <div className="flex items-center justify-between gap-3 mb-4">
-                                                  <div className="flex items-center gap-2 text-indigo-700 dark:text-indigo-400">
+                                                  <div className="flex items-center gap-2 text-yellow-700 dark:text-yellow-400">
                                                     <CheckCircle className="h-4 w-4" />
                                                     <span className="font-medium">
                                                       {part.type ===
-                                                        "tool-createChart" &&
-                                                        "Chart Results"}
-                                                      {part.type ===
-                                                        "tool-codeExecution" &&
-                                                        "Code Execution Results"}
-                                                      {part.type ===
-                                                        "tool-economicsSearch" &&
-                                                        "Economics Data Results"}
-                                                      {part.type ===
-                                                        "tool-FREDSearch" &&
-                                                        "FRED Database Results"}
-                                                      {part.type ===
                                                         "tool-getFREDSeriesData" &&
-                                                        "FRED Series Data Results"}
+                                                        "FRED Series Results"}
                                                       {part.type ===
                                                         "tool-getBLSSeriesData" &&
-                                                        "BLS Series Data Results"}
+                                                        "BLS Series Results"}
                                                       {part.type ===
                                                         "tool-getWBDetails" &&
-                                                        "World Bank Details Results"}
+                                                        "World Bank Data Results"}
                                                       {part.type ===
                                                         "tool-getUSASpendingDetails" &&
-                                                        "USA Spending Details Results"}
-                                                      {part.type ===
-                                                        "tool-webSearch" &&
-                                                        "Web Search Results"}
+                                                        "USAspending Results"}
                                                     </span>
                                                   </div>
-                                                  {searchResults.length > 0 && (
-                                                    <div className="flex items-center gap-2 text-xs text-indigo-600 dark:text-indigo-400">
-                                                      <span>
-                                                        {searchResults.length}{" "}
-                                                        results
-                                                      </span>
-                                                      {searchResults.some(
-                                                        (r: any) =>
-                                                          r.dataType ===
-                                                          "economics_data"
-                                                      ) && (
-                                                        <span className="px-2 py-0.5 bg-indigo-100 dark:bg-indigo-800/30 rounded">
-                                                          Economics Data
-                                                        </span>
-                                                      )}
-                                                      {searchResults.some(
-                                                        (r: any) =>
-                                                          r.dataType ===
-                                                          "fred_data"
-                                                      ) && (
-                                                        <span className="px-2 py-0.5 bg-indigo-100 dark:bg-indigo-800/30 rounded">
-                                                          FRED Data
-                                                        </span>
-                                                      )}
-                                                      {searchResults.some(
-                                                        (r: any) =>
-                                                          r.dataType ===
-                                                          "bls_data"
-                                                      ) && (
-                                                        <span className="px-2 py-0.5 bg-indigo-100 dark:bg-indigo-800/30 rounded">
-                                                          BLS Data
-                                                        </span>
-                                                      )}
-                                                      {searchResults.some(
-                                                        (r: any) =>
-                                                          r.dataType ===
-                                                          "world_bank_data"
-                                                      ) && (
-                                                        <span className="px-2 py-0.5 bg-indigo-100 dark:bg-indigo-800/30 rounded">
-                                                          World Bank Data
-                                                        </span>
-                                                      )}
-                                                      {searchResults.some(
-                                                        (r: any) =>
-                                                          r.dataType ===
-                                                          "web_results"
-                                                      ) && (
-                                                        <span className="px-2 py-0.5 bg-indigo-100 dark:bg-indigo-800/30 rounded">
-                                                          Web Results
-                                                        </span>
-                                                      )}
-                                                    </div>
+                                                  {!!economicResults?.length && (
+                                                    <span className="text-xs text-yellow-600 dark:text-yellow-400">
+                                                      {economicResults.length}{" "}
+                                                      result
+                                                      {economicResults.length ===
+                                                      1
+                                                        ? ""
+                                                        : "s"}
+                                                    </span>
                                                   )}
                                                 </div>
                                                 {part.input?.query && (
-                                                  <div className="text-xs text-indigo-600 dark:text-indigo-400 bg-indigo-100 dark:bg-indigo-800/30 px-2 py-1 rounded mb-2">
+                                                  <div className="text-xs text-yellow-600 dark:text-yellow-400 bg-yellow-100 dark:bg-yellow-800/30 px-2 py-1 rounded mb-2">
                                                     &quot;{part.input.query}
                                                     &quot;
                                                   </div>
                                                 )}
-                                                <SearchResultsCarousel
-                                                  results={searchResults}
-                                                  type="web"
-                                                  toolName={
-                                                    part.type ===
-                                                    "tool-createChart"
-                                                      ? "createChart"
-                                                      : part.type ===
-                                                        "tool-codeExecution"
-                                                      ? "codeExecution"
-                                                      : part.type ===
-                                                        "tool-economicsSearch"
-                                                      ? "economicsSearch"
-                                                      : part.type ===
-                                                        "tool-getFREDSeriesData"
-                                                      ? "getFREDSeriesData"
-                                                      : part.type ===
-                                                        "tool-getUSASpendingDetails"
-                                                      ? "getUSASpendingDetails"
-                                                      : part.type ===
-                                                        "tool-webSearch"
-                                                      ? "webSearch"
-                                                      : "webSearch"
-                                                  }
-                                                  messageId={message.id}
-                                                />
+                                                {economicResults.length > 0 ? (
+                                                  <SearchResultsCarousel
+                                                    results={economicResults}
+                                                    type="economics"
+                                                    toolName={
+                                                      part.type ===
+                                                      "tool-getFREDSeriesData"
+                                                        ? "getFREDSeriesData"
+                                                        : part.type ===
+                                                          "tool-getBLSSeriesData"
+                                                        ? "getBLSSeriesData"
+                                                        : part.type ===
+                                                          "tool-getWBDetails"
+                                                        ? "getWBDetails"
+                                                        : "getUSASpendingDetails"
+                                                    }
+                                                    messageId={message.id}
+                                                  />
+                                                ) : fallbackNode ? (
+                                                  fallbackNode
+                                                ) : (
+                                                  <div className="text-sm text-gray-500">
+                                                    No results found.
+                                                  </div>
+                                                )}
                                               </div>
                                             );
+                                          }
                                           case "output-streaming":
                                             return (
                                               <div
                                                 key={callId}
-                                                className="mt-2 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 rounded p-2 sm:p-3"
+                                                className="mt-2 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded p-2 sm:p-3"
                                               >
-                                                <div className="flex items-center gap-2 text-indigo-700 dark:text-indigo-400 mb-2">
+                                                <div className="flex items-center gap-2 text-yellow-700 dark:text-yellow-400 mb-2">
                                                   <span className="text-lg">
-                                                    🧬
+                                                    💹
                                                   </span>
                                                   <span className="font-medium">
-                                                    Healthcare Search
+                                                    Economic Search
                                                   </span>
                                                   <Clock className="h-3 w-3 animate-spin" />
                                                 </div>
-                                                <div className="text-sm text-indigo-600 dark:text-indigo-300">
+                                                <div className="text-sm text-yellow-600 dark:text-yellow-300">
                                                   Retrieving results...
                                                 </div>
                                               </div>
                                             );
                                           case "error":
+                                          case "output-error":
                                             return (
                                               <div
                                                 key={callId}
@@ -7469,7 +5935,7 @@ export function ChatInterface({
                                                     ❌
                                                   </span>
                                                   <span className="font-medium">
-                                                    Healthcare Search Error
+                                                    Economic Tool Error
                                                   </span>
                                                 </div>
                                                 <div className="text-sm text-red-600 dark:text-red-300">
@@ -7533,7 +5999,6 @@ export function ChatInterface({
                               })()}
                             </div>
                           )}
-
                           {/* Message Actions */}
                           {message.role === "assistant" && (
                             <div className="flex justify-end gap-1 mt-3 opacity-0 group-hover:opacity-100 transition-opacity">

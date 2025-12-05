@@ -128,13 +128,9 @@ export function NewsCarousel({ country = "global" }: { country?: string }) {
 
   useEffect(() => {
     const loadNewsForCountry = async () => {
-      console.log(`[NewsCarousel] Loading news for country: ${country}`);
-
       // Check if we have valid cached data
       if (isCacheValid(country)) {
-        console.log(`[NewsCarousel] Using cached data for ${country}`);
         const cachedData = getCachedNews(country);
-        console.log(`[NewsCarousel] Cached data length:`, cachedData.length);
         setNewsItems(cachedData);
         setLoading(false);
         return;
@@ -142,7 +138,6 @@ export function NewsCarousel({ country = "global" }: { country?: string }) {
 
       // Check if we're already loading this country
       if (loadingStates[country]) {
-        console.log(`[NewsCarousel] Already loading data for ${country}`);
         return;
       }
 
@@ -151,8 +146,6 @@ export function NewsCarousel({ country = "global" }: { country?: string }) {
       setLoading(true);
 
       try {
-        console.log(`[NewsCarousel] Streaming fresh data for ${country}`);
-
         // Use streaming endpoint for progressive loading
         const response = await fetch(`/api/news/stream?country=${country}`);
 
@@ -215,14 +208,7 @@ export function NewsCarousel({ country = "global" }: { country?: string }) {
 
                     // Update UI immediately with new results
                     setNewsItems(itemsWithImages);
-                    console.log(
-                      `[NewsCarousel] Added ${newResults.length} results, total: ${itemsWithImages.length} with images`
-                    );
                   } else if (data.type === "complete") {
-                    console.log(
-                      `[NewsCarousel] Completed fetching news for ${country}: ${data.total} total results`
-                    );
-
                     // Final processing and caching
                     const finalItems = accumulatedResults.filter(
                       (item: NewsItem) => {
@@ -250,10 +236,6 @@ export function NewsCarousel({ country = "global" }: { country?: string }) {
                     // Cache the final data
                     setCachedNews(country, finalItems);
                     setNewsItems(finalItems);
-                    console.log(
-                      `[NewsCarousel] Final news items set:`,
-                      finalItems.length
-                    );
                   }
                 } catch (parseError) {
                   console.error("Error parsing SSE data:", parseError);
@@ -532,9 +514,6 @@ export function NewsCarousel({ country = "global" }: { country?: string }) {
                 fill
                 className="object-cover group-hover:scale-110 transition-transform duration-300"
                 onError={() => {
-                  console.log(
-                    `[NewsCarousel] Image failed to load: ${item.image}`
-                  );
                   setFailedImages((prev) => new Set(prev).add(item.image));
                 }}
               />
@@ -566,9 +545,6 @@ export function NewsCarousel({ country = "global" }: { country?: string }) {
                 fill
                 className="object-cover group-hover:scale-110 transition-transform duration-300"
                 onError={() => {
-                  console.log(
-                    `[NewsCarousel] Image failed to load: ${item.image}`
-                  );
                   setFailedImages((prev) => new Set(prev).add(item.image));
                 }}
               />
